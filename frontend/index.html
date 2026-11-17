@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stockify – learn trading with paper money</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@500;700;800&family=Figtree:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{--ink:#10192f;--muted:#5c6785;--bg:#eef1f7;--card:#fff;--line:#dde2ee;--brand:#3b4cca;--brand-ink:#fff;--gain:#0b8f63;--loss:#d6384a;--r:14px}
+*{box-sizing:border-box}
+body{margin:0;font:400 16px/1.5 Figtree,system-ui,sans-serif;color:var(--ink);background:var(--bg)}
+h1,h2,h3,.logo{font-family:'Bricolage Grotesque',sans-serif;letter-spacing:-.02em;margin:0}
+button,input{font:inherit}
+:focus-visible{outline:3px solid var(--brand);outline-offset:2px}
+.logo{font-weight:800;font-size:1.5rem}.logo i{font-style:normal;color:var(--brand)}
+header{display:flex;align-items:center;justify-content:space-between;padding:14px 28px;background:var(--card);border-bottom:1px solid var(--line)}
+header .who{display:flex;gap:14px;align-items:center;color:var(--muted);font-size:.9rem}
+.badge{background:var(--bg);border:1px solid var(--line);border-radius:99px;padding:2px 10px;font-weight:600;color:var(--ink)}
+main{max-width:1120px;margin:28px auto;padding:0 20px;display:grid;gap:20px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:22px}
+.grid{display:grid;grid-template-columns:minmax(280px,360px) 1fr;gap:20px;align-items:start}
+@media(max-width:820px){.grid{grid-template-columns:1fr}}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:20px}
+@media(max-width:620px){.stats{grid-template-columns:1fr}}
+.stat small{color:var(--muted)}.stat b{display:block;font:700 1.9rem 'Bricolage Grotesque';margin-top:2px}
+.gain{color:var(--gain)}.loss{color:var(--loss)}
+label{display:block;font-weight:600;font-size:.9rem;margin:14px 0 6px}
+input{width:100%;padding:11px 12px;border:1px solid var(--line);border-radius:10px;background:#fff}
+.row{display:flex;gap:8px}
+.btn{border:0;border-radius:10px;padding:11px 16px;font-weight:600;cursor:pointer;background:var(--brand);color:var(--brand-ink)}
+.btn.ghost{background:var(--bg);color:var(--ink);border:1px solid var(--line)}
+.btn.buy{background:var(--gain)}.btn.sell{background:var(--loss)}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+.quote{margin-top:16px;padding:14px;border-radius:10px;background:var(--bg)}
+.quote .px{font:700 2rem 'Bricolage Grotesque'}
+table{width:100%;border-collapse:collapse;font-size:.95rem}
+th,td{text-align:right;padding:10px 8px;border-bottom:1px solid var(--line)}
+th:first-child,td:first-child{text-align:left}
+th{color:var(--muted);font-weight:500}
+.wrap{overflow-x:auto}
+.empty{color:var(--muted);padding:18px 0}
+.auth{max-width:420px;margin:9vh auto;padding:0 20px}
+.auth h1{font-size:2.4rem;line-height:1.1;margin:14px 0 6px}
+.auth p{color:var(--muted);margin:0 0 18px}
+.link{background:none;border:0;color:var(--brand);font-weight:600;cursor:pointer;padding:0}
+#toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%);background:var(--ink);color:#fff;padding:12px 18px;border-radius:10px;opacity:0;pointer-events:none;transition:opacity .2s;max-width:90vw}
+#toast.show{opacity:1}#toast.err{background:var(--loss)}
+.hidden{display:none}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div id="toast" role="status"></div>
+<script>
+const $ = s => document.querySelector(s);
+const money = n => Number(n).toLocaleString('en-US', {style:'currency', currency:'USD'});
+const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+let mode = 'login', quote = null;
+
+function toast(msg, bad){ const t=$('#toast'); t.textContent=msg; t.className='show'+(bad?' err':''); clearTimeout(toast.id); toast.id=setTimeout(()=>t.className='',3200); }
+
+async function api(path, opts={}){
+  const tok = localStorage.getItem('tok');
+  const r = await fetch('/api'+path, {
+    method: opts.method || 'GET',
+    headers: {'Content-Type':'application/json', ...(tok?{Authorization:'Bearer '+tok}:{})},
+    body: opts.body ? JSON.stringify(opts.body) : undefined
+  });
+  const j = await r.json().catch(()=>({}));
+  if(!r.ok){ if(r.status===401 && tok) logout(true); throw new Error(j.error||'Something went wrong'); }
+  return j;
+}
+function logout(silent){ localStorage.clear(); quote=null; render(); if(silent!==true) toast('Logged out'); }
+
+function header(){
+  return `<header><div class="logo">Stock<i>ify</i></div>
+  <div class="who"><span>${esc(localStorage.getItem('email'))}</span><span class="badge">${esc(localStorage.getItem('role'))}</span>
+  <button class="btn ghost" onclick="logout()">Log out</button></div></header>`;
+}
+
+function render(){
+  const role = localStorage.getItem('role');
+  if(!localStorage.getItem('tok')) return authView();
+  role === 'admin' ? adminView() : traderView();
+}
+
+function authView(){
+  const login = mode==='login';
+  $('#app').innerHTML = `<div class="auth"><div class="logo">Stock<i>ify</i></div>
+  <h1>Practice trading. Risk nothing.</h1>
+  <p>Start with $100,000 in paper money and trade real market prices.</p>
+  <form class="card" id="authForm">
+    <label for="em">Email</label><input id="em" type="email" required autocomplete="email">
+    <label for="pw">Password</label><input id="pw" type="password" minlength="6" required autocomplete="${login?'current-password':'new-password'}">
+    <div style="margin-top:18px" class="row"><button class="btn" style="flex:1">${login?'Log in':'Create account'}</button></div>
+    <p style="margin:16px 0 0">${login?'New here?':'Already have an account?'}
+      <button type="button" class="link" id="swap">${login?'Create an account':'Log in'}</button></p>
+  </form></div>`;
+  $('#swap').onclick = () => { mode = login?'signup':'login'; authView(); };
+  $('#authForm').onsubmit = async e => {
+    e.preventDefault();
+    try{
+      const j = await api(login?'/login':'/signup', {method:'POST', body:{email:$('#em').value.trim(), password:$('#pw').value}});
+      localStorage.setItem('tok', j.token); localStorage.setItem('role', j.role); localStorage.setItem('email', j.email);
+      render();
+    }catch(err){ toast(err.message, true); }
+  };
+}
+
+async function traderView(){
+  $('#app').innerHTML = header() + `<main>
+    <section class="card stats" id="stats"></section>
+    <div class="grid">
+      <section class="card"><h2>Trade</h2>
+        <form id="q" class="row" style="margin-top:12px"><input id="sym" placeholder="Ticker, e.g. AAPL or TCS.NS" aria-label="Ticker symbol" required><button class="btn">Get price</button></form>
+        <div id="quote"></div></section>
+      <section class="card"><h2>Your holdings</h2><div class="wrap" id="hold"></div></section>
+    </div>
+    <section class="card"><h2>Trade history</h2><div class="wrap" id="hist"></div></section></main>`;
+  $('#q').onsubmit = async e => { e.preventDefault(); await getQuote($('#sym').value); };
+  await refresh();
+}
+
+async function getQuote(sym){
+  try{ quote = await api('/quote?symbol='+encodeURIComponent(sym.trim())); drawQuote(); }
+  catch(err){ quote=null; $('#quote').innerHTML=''; toast(err.message, true); }
+}
+function drawQuote(){
+  const up = quote.changePct >= 0;
+  $('#quote').innerHTML = `<div class="quote"><b>${esc(quote.symbol)}</b> <span style="color:var(--muted)">${esc(quote.name)}</span>
+    <div class="px">${quote.price.toFixed(2)} <small>${esc(quote.currency)}</small></div>
+    <div class="${up?'gain':'loss'}">${up?'+':''}${quote.changePct.toFixed(2)}% today</div></div>
+    <label for="qty">Quantity</label><input id="qty" type="number" min="1" value="1">
+    <div class="row" style="margin-top:14px"><button class="btn buy" style="flex:1" onclick="trade('BUY')">Buy</button>
+    <button class="btn sell" style="flex:1" onclick="trade('SELL')">Sell</button></div>`;
+}
+async function trade(side){
+  try{
+    const j = await api('/trade', {method:'POST', body:{symbol:quote.symbol, side, qty:parseInt($('#qty').value,10)}});
+    toast(j.message); await refresh();
+  }catch(err){ toast(err.message, true); }
+}
+async function refresh(){
+  try{
+    const [p, t] = await Promise.all([api('/portfolio'), api('/trades')]);
+    const pnl = p.equity - p.startCash;
+    $('#stats').innerHTML = `<div class="stat"><small>Cash</small><b>${money(p.balance)}</b></div>
+      <div class="stat"><small>Total value</small><b>${money(p.equity)}</b></div>
+      <div class="stat"><small>Profit / loss</small><b class="${pnl>=0?'gain':'loss'}">${pnl>=0?'+':''}${money(pnl)}</b></div>`;
+    $('#hold').innerHTML = p.holdings.length ? `<table><tr><th>Symbol</th><th>Qty</th><th>Avg cost</th><th>Price</th><th>P/L</th></tr>` +
+      p.holdings.map(h=>`<tr><td><b>${esc(h.symbol)}</b></td><td>${h.qty}</td><td>${h.avgPrice.toFixed(2)}</td><td>${h.price.toFixed(2)}</td>
+      <td class="${h.pnl>=0?'gain':'loss'}">${h.pnl>=0?'+':''}${h.pnl.toFixed(2)}</td></tr>`).join('') + '</table>'
+      : '<div class="empty">No holdings yet. Search a ticker and place your first buy.</div>';
+    $('#hist').innerHTML = t.length ? `<table><tr><th>Time</th><th>Side</th><th>Symbol</th><th>Qty</th><th>Price</th></tr>` +
+      t.map(x=>`<tr><td>${new Date(x.created_at).toLocaleString()}</td><td class="${x.side==='BUY'?'gain':'loss'}">${x.side}</td><td>${esc(x.symbol)}</td><td>${x.qty}</td><td>${Number(x.price).toFixed(2)}</td></tr>`).join('') + '</table>'
+      : '<div class="empty">Your trades will show up here.</div>';
+  }catch(err){ toast(err.message, true); }
+}
+
+async function adminView(){
+  $('#app').innerHTML = header() + `<main>
+    <section class="card"><h2>Users</h2><div class="wrap" id="users"></div></section>
+    <section class="card"><h2>Recent trades (all users)</h2><div class="wrap" id="all"></div></section></main>`;
+  try{
+    const [u, t] = await Promise.all([api('/admin/users'), api('/admin/trades')]);
+    const mail = Object.fromEntries(u.map(x=>[x.id, x.email]));
+    $('#users').innerHTML = `<table><tr><th>Email</th><th>Role</th><th>Cash</th><th></th></tr>` + u.map(x=>`<tr><td>${esc(x.email)}</td><td>${x.role}</td>
+      <td>${money(x.balance)}</td><td>${x.role==='user'?`<button class="btn ghost" onclick="reset('${x.id}')">Reset to $100,000</button>`:''}</td></tr>`).join('') + '</table>';
+    $('#all').innerHTML = t.length ? `<table><tr><th>Time</th><th>User</th><th>Side</th><th>Symbol</th><th>Qty</th><th>Price</th></tr>` +
+      t.map(x=>`<tr><td>${new Date(x.created_at).toLocaleString()}</td><td>${esc(mail[x.user_id]||'')}</td><td>${x.side}</td><td>${esc(x.symbol)}</td><td>${x.qty}</td><td>${Number(x.price).toFixed(2)}</td></tr>`).join('') + '</table>'
+      : '<div class="empty">No trades yet.</div>';
+  }catch(err){ toast(err.message, true); }
+}
+async function reset(id){
+  if(!confirm('Reset this user’s cash to $100,000?')) return;
+  try{ await api('/admin/reset', {method:'POST', body:{id}}); toast('Balance reset'); adminView(); }catch(err){ toast(err.message, true); }
+}
+render();
+</script>
+</body>
+</html>

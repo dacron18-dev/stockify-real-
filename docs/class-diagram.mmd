@@ -1,0 +1,61 @@
+classDiagram
+direction TB
+class User {
+  <<abstract>>
+  #string id_
+  #string email_
+  +role() string*
+  +canTrade() bool*
+}
+class Trader {
+  -double balance_
+  -Portfolio portfolio_
+  +debit(amt)
+  +credit(amt)
+  +portfolio() Portfolio
+}
+class Admin
+class Portfolio {
+  -map~string,Holding~ holdings_
+  +add(symbol, qty, price)
+  +remove(symbol, qty)
+}
+class Holding {
+  +string symbol
+  +int qty
+  +double avgPrice
+}
+class Order {
+  <<abstract>>
+  #string symbol_
+  #int qty_
+  #double price_
+  +execute(Trader)* void
+  +side()* string
+  +total() double
+  +create(side, symbol, qty, price)$ Order
+}
+class BuyOrder
+class SellOrder
+class IMarketData { <<interface>> +getQuote(symbol) Quote }
+class IAuthService { <<interface>> +signUp() +signIn() +verify() }
+class IRepository { <<interface>> +loadUser() +saveTrader() +recordTrade() +listUsers() +listTrades() +setBalance() }
+class YahooMarketData
+class SupabaseAuth
+class SupabaseRepository
+class Quote { +symbol +name +price +prevClose }
+class TradeError
+class AuthError
+User <|-- Trader
+User <|-- Admin
+Trader *-- Portfolio : owns
+Portfolio o-- Holding
+Order <|-- BuyOrder
+Order <|-- SellOrder
+Order ..> Trader : modifies
+IMarketData <|.. YahooMarketData
+IAuthService <|.. SupabaseAuth
+IRepository <|.. SupabaseRepository
+IMarketData ..> Quote
+SupabaseRepository ..> User : builds
+Order ..> TradeError : throws
