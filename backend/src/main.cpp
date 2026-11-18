@@ -58,6 +58,8 @@ int main() {
         "ONGC.NS", "WIPRO.NS", "POWERGRID.NS", "M&M.NS", "TATASTEEL.NS",
         "JSWSTEEL.NS", "ADANIPORTS.NS", "COALINDIA.NS", "NESTLEIND.NS", "TECHM.NS"};
 
+    TtlCache<std::string, json> watchCache{std::chrono::seconds(15)};   // market table is shared by every user
+    std::mutex watchMutex;
     YahooMarketData yahoo;
     SupabaseAuth auth(env("SUPABASE_URL"), env("SUPABASE_ANON_KEY"));
     SupabaseRepository repo(env("SUPABASE_URL"), env("SUPABASE_SERVICE_KEY"));
@@ -139,6 +141,8 @@ int main() {
     }));
     svr.Get("/api/watchlist", guard([&](const httplib::Request& rq, httplib::Response& rs) {
         authed(rq);
+        std::lock_guard<std::mutex> lk(watchMutex);                // all users share one refresh
+        if (auto hit = watchCache.get("all")) { reply(rs, 200, *hit); return; }
         std::vector<std::future<json>> fs;
         for (auto& s : watchlist)
             fs.push_back(std::async(std::launch::async, [&market, s] {
@@ -146,6 +150,7 @@ int main() {
             }));
         json out = json::array();
         for (auto& f : fs) { json q = f.get(); if (!q.is_null()) out.push_back(q); }
+        if (!out.empty()) watchCache.put("all", out);
         reply(rs, 200, out);
     }));
     svr.Get("/api/portfolio", guard([&](const httplib::Request& rq, httplib::Response& rs) {

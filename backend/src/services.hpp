@@ -4,6 +4,8 @@
 #define CPPHTTPLIB_OPENSSL_SUPPORT
 #endif
 #include <cstdlib>
+#include <memory>
+#include <mutex>
 #include <httplib.h>
 #include "interfaces.hpp"
 
@@ -21,22 +23,41 @@ struct HttpResult {
     json asJson() const { return json::parse(body.empty() ? "null" : body, nullptr, false); }
 };
 
+// HTTPS client with a small pool of keep-alive connections. Opening a new TLS connection for every call
+// was the main cause of slowness (3 handshakes per API request on a tiny server), so connections are reused.
 class HttpsClient {
     std::string host_;
+    mutable std::mutex m_;
+    mutable std::vector<std::unique_ptr<httplib::SSLClient>> idle_;
+    std::unique_ptr<httplib::SSLClient> acquire(bool fresh) const {
+        if (!fresh) {
+            std::lock_guard<std::mutex> g(m_);
+            if (!idle_.empty()) { auto c = std::move(idle_.back()); idle_.pop_back(); return c; }
+        }
+        auto c = std::make_unique<httplib::SSLClient>(host_);
+        c->set_follow_location(true);
+        c->set_connection_timeout(8);
+        c->set_read_timeout(10);
+        c->set_keep_alive(true);
+        return c;
+    }
+    void release(std::unique_ptr<httplib::SSLClient> c) const {
+        std::lock_guard<std::mutex> g(m_);
+        if (idle_.size() < 32) idle_.push_back(std::move(c));
+    }
 public:
     explicit HttpsClient(std::string host) : host_(std::move(host)) {}
     HttpResult send(const std::string& m, const std::string& path,
                     const httplib::Headers& h, const std::string& body = "") const {
-        httplib::SSLClient c(host_);
-        c.set_follow_location(true);
-        c.set_connection_timeout(8);
-        c.set_read_timeout(10);
-        httplib::Result r = m == "GET"   ? c.Get(path, h)
-                          : m == "POST"  ? c.Post(path, h, body, "application/json")
-                          : m == "PATCH" ? c.Patch(path, h, body, "application/json")
-                                         : c.Delete(path, h);
-        if (!r) throw std::runtime_error("Could not reach " + host_);
-        return {r->status, r->body};
+        for (int attempt = 0; attempt < 2; ++attempt) {          // 2nd try uses a fresh connection (old one may have timed out)
+            auto c = acquire(attempt == 1);
+            httplib::Result r = m == "GET"   ? c->Get(path, h)
+                              : m == "POST"  ? c->Post(path, h, body, "application/json")
+                              : m == "PATCH" ? c->Patch(path, h, body, "application/json")
+                                             : c->Delete(path, h);
+            if (r) { HttpResult out{r->status, r->body}; release(std::move(c)); return out; }
+        }
+        throw std::runtime_error("Could not reach " + host_);
     }
 };
 
@@ -109,6 +130,7 @@ public:
 class SupabaseAuth : public IAuthService {
     HttpsClient http_;
     std::string anon_;
+    TtlCache<std::string, std::string> tokens_{std::chrono::seconds(120)};   // token -> user id
     httplib::Headers hdr(const std::string& bearer = "") const {
         httplib::Headers h{{"apikey", anon_}};
         if (!bearer.empty()) h.emplace("Authorization", "Bearer " + bearer);
@@ -132,9 +154,12 @@ public:
         return {{"token", j["access_token"]}, {"id", j["user"]["id"]}};
     }
     std::string verify(const std::string& token) override {
+        if (auto hit = tokens_.get(token)) return *hit;
         auto r = http_.send("GET", "/auth/v1/user", hdr(token));
         if (r.status != 200) throw AuthError("Session expired. Please log in again.");
-        return r.asJson()["id"].get<std::string>();
+        std::string id = r.asJson()["id"].get<std::string>();
+        tokens_.put(token, id);
+        return id;
     }
 };
 
@@ -170,12 +195,12 @@ public:
              "resolution=ignore-duplicates,return=minimal");   // safe to call repeatedly
     }
     std::unique_ptr<User> loadUser(const std::string& id) override {
-        json p = call("GET", "profiles?id=eq." + id + "&select=*");
+        json p = call("GET", "profiles?id=eq." + id + "&select=*,holdings(*)");      // one round trip
         if (!p.is_array() || p.empty()) throw AuthError("Profile not found");
         const json& row = p[0];
         if (row["role"] == "admin") return std::make_unique<Admin>(id, row["email"]);
         auto t = std::make_unique<Trader>(id, row["email"], row["balance"].get<double>());
-        for (auto& h : call("GET", "holdings?user_id=eq." + id + "&select=*"))
+        for (auto& h : row["holdings"])
             t->portfolio().addHolding(Holding(h["symbol"], h["qty"], h["avg_price"].get<double>()));
         return t;
     }

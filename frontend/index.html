@@ -57,6 +57,7 @@ th{color:var(--muted);font-weight:500}
 const $ = s => document.querySelector(s);
 const money = n => Number(n).toLocaleString('en-IN', {style:'currency', currency:'INR'});
 const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+fetch('/api/health').catch(()=>{});                      // wake the free server while the page loads
 let mode = 'login', quote = null, chartRange = '1mo', chartPts = [];
 
 function toast(msg, bad){ const t=$('#toast'); t.textContent=msg; t.className='show'+(bad?' err':''); clearTimeout(toast.id); toast.id=setTimeout(()=>t.className='',3200); }
@@ -128,12 +129,13 @@ async function traderView(){
   loadWatch();
   loadAlerts();
   clearInterval(window.poll); let n = 0;
-  window.poll = setInterval(() => {                       // live updates every 10 seconds
-    n++; updateQuote();
-    if(n%2===0) refresh();                                // portfolio value (every 20s)
-    if(n%3===0){ loadWatch(); loadAlerts(); }             // market table + alerts (every 30s)
-    if(n%6===0 && quote && (chartRange==='1d'||chartRange==='5d')) loadChart(true);   // intraday chart (every 60s)
-  }, 10000);
+  window.poll = setInterval(() => {                       // live updates (paused while the tab is hidden)
+    if(document.hidden) return;
+    n++; updateQuote();                                   // selected stock price (every 15s)
+    if(n%2===0) refresh();                                // portfolio value (every 30s)
+    if(n%3===0){ loadWatch(); loadAlerts(); }             // market table + alerts (every 45s)
+    if(n%4===0 && quote && (chartRange==='1d'||chartRange==='5d')) loadChart(true);   // intraday chart (every 60s)
+  }, 15000);
 }
 
 async function loadWatch(){
@@ -217,7 +219,7 @@ function drawQuote(){
   $('#quote').innerHTML = `<div class="quote"><b>${esc(quote.symbol)}</b> <span style="color:var(--muted)">${esc(quote.name)}</span>
     <div class="px" id="qpx">₹${quote.price.toFixed(2)} <small>INR</small></div>
     <div id="qchg" class="${up?'gain':'loss'}">${up?'+':''}${quote.changePct.toFixed(2)}% today</div>
-    <small id="qtime" style="color:var(--muted)">Live, updates every 10 seconds</small></div>
+    <small id="qtime" style="color:var(--muted)">Live, updates every 15 seconds</small></div>
     <label for="qty">Quantity</label><input id="qty" type="number" min="1" value="1">
     <div class="row" style="margin-top:14px"><button class="btn buy" style="flex:1" onclick="trade('BUY')">Buy</button>
     <button class="btn sell" style="flex:1" onclick="trade('SELL')">Sell</button></div>
