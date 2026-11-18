@@ -60,6 +60,8 @@ Traders: live quotes, buy/sell, portfolio with profit/loss, trade history, price
 ## Known limits (mention these honestly)
 - The server writes `stockify.log` and `stockify.audit` on its own disk; on Render these reset on redeploy.
 - Prices are market prices from Yahoo's unofficial endpoint and may be delayed; it can rate-limit.
+- Prices refresh every 10 seconds in the app, but Yahoo only changes them while NSE/BSE is open (Mon-Fri, 9:15 am to 3:30 pm IST); outside those hours you see the last close.
+- The price chart (`/api/history`) supports 1D, 5D, 1M, 6M and 1Y ranges.
 - Only Indian stocks (NSE `.NS`, BSE `.BO`) are allowed; everything is in INR, so there is no currency conversion. Typing `TCS` is treated as `TCS.NS`. The market table lists 30 large-cap Nifty 50 stocks (RELIANCE, TCS, HDFCBANK, ICICIBANK, INFY, HINDUNILVR, ITC, SBIN, BHARTIARTL, KOTAKBANK, LT, AXISBANK, ASIANPAINT, MARUTI, SUNPHARMA, TITAN, BAJFINANCE, HCLTECH, NTPC, ULTRACEMCO, ONGC, WIPRO, POWERGRID, M&M, TATASTEEL, JSWSTEEL, ADANIPORTS, COALINDIA, NESTLEIND, TECHM); any other NSE/BSE symbol can be searched.
 - Saving a trade makes several database calls, not one atomic transaction (a Postgres function would fix this).
 - Render's free tier sleeps when idle, so the first request can be slow.

@@ -50,7 +50,8 @@ inline std::string errText(const json& j, const std::string& fallback) {
 // ================= Yahoo Finance =================
 class YahooMarketData : public IMarketData {
     HttpsClient http_{"query1.finance.yahoo.com"};
-    TtlCache<std::string, Quote> cache_{std::chrono::seconds(45)};   // generic class template
+    TtlCache<std::string, Quote> cache_{std::chrono::seconds(10)};   // generic class template
+    TtlCache<std::string, std::vector<Candle>> histCache_{std::chrono::seconds(60)};
 public:
     Quote getQuote(const std::string& s) override {
         if (auto hit = cache_.get(s)) return *hit;
@@ -73,6 +74,34 @@ public:
         if (q.price <= 0) throw TradeError("No live price for " + s);
         cache_.put(s, q);
         return q;
+    }
+    // Price history for the chart: range is 1d, 5d, 1mo, 6mo or 1y.
+    std::vector<Candle> getHistory(const std::string& s, const std::string& range) override {
+        static const std::map<std::string, std::string> interval{
+            {"1d", "5m"}, {"5d", "15m"}, {"1mo", "1d"}, {"6mo", "1d"}, {"1y", "1d"}};
+        auto iv = interval.find(range);
+        if (iv == interval.end()) throw ValidationError("Range must be 1d, 5d, 1mo, 6mo or 1y");
+        const std::string key = s + "|" + range;
+        if (auto hit = histCache_.get(key)) return *hit;
+        std::string path = s;
+        for (size_t p; (p = path.find('&')) != std::string::npos;) path.replace(p, 1, "%26");
+        auto r = http_.send("GET", "/v8/finance/chart/" + path + "?interval=" + iv->second + "&range=" + range,
+                            {{"User-Agent", "Mozilla/5.0"}});
+        json j = r.asJson();
+        if (r.status != 200 || j.is_discarded() || !j.contains("chart") ||
+            !j["chart"].contains("result") || j["chart"]["result"].is_null())
+            throw UnknownSymbol("No chart data for " + s);
+        const json& res = j["chart"]["result"][0];
+        std::vector<Candle> out;
+        if (res.contains("timestamp") && res["indicators"]["quote"][0].contains("close")) {
+            const json& ts = res["timestamp"];
+            const json& cl = res["indicators"]["quote"][0]["close"];
+            for (size_t i = 0; i < ts.size() && i < cl.size(); ++i)
+                if (!cl[i].is_null()) out.push_back({ts[i].get<long long>(), cl[i].get<double>()});   // skip gaps
+        }
+        if (out.empty()) throw TradeError("No chart data for " + s);
+        histCache_.put(key, out);
+        return out;
     }
 };
 

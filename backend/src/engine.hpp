@@ -116,7 +116,10 @@ public:
     ~Simulation() { stop(); }
     void start() { if (running_.exchange(true)) return; task_.reset(); thread_.start(); }
     void stop() { if (!running_.exchange(false)) return; task_.stop(); thread_.join(); }
-    void advanceTick() { ++ticks_; market_.updatePrices(); alerts_.checkAll(); }
+    void advanceTick() {                                   // a network hiccup must never kill the server thread
+        ++ticks_;
+        try { market_.updatePrices(); alerts_.checkAll(); } catch (const std::exception&) {}
+    }
     MarketEvent generateMarketEvent() {
         static const std::pair<const char*, double> kinds[] = {
             {"Strong earnings", 0.04}, {"Regulatory probe", -0.05}, {"New product launch", 0.025}, {"Supply chain delay", -0.03}};

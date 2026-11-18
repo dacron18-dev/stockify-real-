@@ -57,7 +57,7 @@ th{color:var(--muted);font-weight:500}
 const $ = s => document.querySelector(s);
 const money = n => Number(n).toLocaleString('en-IN', {style:'currency', currency:'INR'});
 const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-let mode = 'login', quote = null;
+let mode = 'login', quote = null, chartRange = '1mo', chartPts = [];
 
 function toast(msg, bad){ const t=$('#toast'); t.textContent=msg; t.className='show'+(bad?' err':''); clearTimeout(toast.id); toast.id=setTimeout(()=>t.className='',3200); }
 
@@ -72,7 +72,7 @@ async function api(path, opts={}){
   if(!r.ok){ if(r.status===401 && tok) logout(true); throw new Error(j.error||'Something went wrong'); }
   return j;
 }
-function logout(silent){ localStorage.clear(); quote=null; render(); if(silent!==true) toast('Logged out'); }
+function logout(silent){ clearInterval(window.poll); localStorage.clear(); quote=null; render(); if(silent!==true) toast('Logged out'); }
 
 function header(){
   return `<header><div class="logo">Stock<i>ify</i></div>
@@ -116,7 +116,8 @@ async function traderView(){
       <section class="card"><h2>Trade</h2>
         <form id="q" class="row" style="margin-top:12px"><input id="sym" list="nifty" placeholder="Indian stock, e.g. RELIANCE or TCS" aria-label="Ticker symbol" required><button class="btn">Get price</button></form>
         <datalist id="nifty"></datalist>
-        <div id="quote"></div></section>
+        <div id="quote"></div>
+        <div id="chartBox" style="margin-top:16px"></div></section>
       <section class="card"><h2>Your holdings</h2><div class="wrap" id="hold"></div></section>
     </div>
     <section class="card"><h2>Nifty 50 stocks (NSE)</h2><div class="wrap" id="watch"><div class="empty">Loading prices...</div></div></section>
@@ -126,7 +127,13 @@ async function traderView(){
   await refresh();
   loadWatch();
   loadAlerts();
-  clearInterval(window.poll); window.poll = setInterval(loadAlerts, 30000);
+  clearInterval(window.poll); let n = 0;
+  window.poll = setInterval(() => {                       // live updates every 10 seconds
+    n++; updateQuote();
+    if(n%2===0) refresh();                                // portfolio value (every 20s)
+    if(n%3===0){ loadWatch(); loadAlerts(); }             // market table + alerts (every 30s)
+    if(n%6===0 && quote && (chartRange==='1d'||chartRange==='5d')) loadChart(true);   // intraday chart (every 60s)
+  }, 10000);
 }
 
 async function loadWatch(){
@@ -142,14 +149,75 @@ async function loadWatch(){
 }
 
 async function getQuote(sym){
-  try{ quote = await api('/quote?symbol='+encodeURIComponent(sym.trim())); drawQuote(); }
-  catch(err){ quote=null; $('#quote').innerHTML=''; toast(err.message, true); }
+  try{ quote = await api('/quote?symbol='+encodeURIComponent(sym.trim())); drawQuote(); loadChart(); }
+  catch(err){ quote=null; $('#quote').innerHTML=''; $('#chartBox').innerHTML=''; toast(err.message, true); }
+}
+async function updateQuote(){                              // refresh only the price, keep typed quantity / alert values
+  if(!quote || !$('#qpx')) return;
+  try{ const q = await api('/quote?symbol='+encodeURIComponent(quote.symbol));
+    if(!quote || q.symbol!==quote.symbol) return;
+    quote = q; const up = q.changePct >= 0;
+    $('#qpx').innerHTML = '₹'+q.price.toFixed(2)+' <small>INR</small>';
+    $('#qchg').className = up?'gain':'loss';
+    $('#qchg').textContent = (up?'+':'')+q.changePct.toFixed(2)+'% today';
+    $('#qtime').textContent = 'Updated '+new Date().toLocaleTimeString('en-IN');
+  }catch(e){}
+}
+async function loadChart(silent){
+  const box = $('#chartBox'); if(!box || !quote) return;
+  const sym = quote.symbol;
+  if(silent!==true) box.innerHTML = '<div class="empty">Loading chart...</div>';
+  try{ const j = await api('/history?symbol='+encodeURIComponent(sym)+'&range='+chartRange);
+    if(!quote || quote.symbol!==sym) return;
+    chartPts = j.points; drawChart();
+  }catch(e){ if(silent!==true) box.innerHTML = '<div class="empty">Chart not available for this stock right now.</div>'; }
+}
+function setRange(r){ chartRange = r; loadChart(); }
+function drawChart(){
+  const box = $('#chartBox'), pts = chartPts;
+  if(!box || pts.length<2){ if(box) box.innerHTML = '<div class="empty">Not enough chart data yet.</div>'; return; }
+  const W=600, H=230, L=6, R=6, T=12, B=24;
+  const cs = pts.map(p=>p.c), min = Math.min(...cs), max = Math.max(...cs), span = (max-min) || 1;
+  const x = i => L + i*(W-L-R)/(pts.length-1), y = v => T + (max-v)*(H-T-B)/span;
+  const up = cs[cs.length-1] >= cs[0], col = up ? 'var(--gain)' : 'var(--loss)';
+  const line = pts.map((p,i)=>(i?'L':'M')+x(i).toFixed(1)+' '+y(p.c).toFixed(1)).join(' ');
+  const area = line+' L'+x(pts.length-1).toFixed(1)+' '+(H-B)+' L'+x(0).toFixed(1)+' '+(H-B)+' Z';
+  const intraday = chartRange==='1d' || chartRange==='5d';
+  const fmt = t => new Date(t*1000).toLocaleString('en-IN', {timeZone:'Asia/Kolkata', ...(intraday ? {day:'numeric', month:'short', hour:'2-digit', minute:'2-digit'} : {day:'numeric', month:'short', year:'2-digit'})});
+  const chg = cs[cs.length-1]-cs[0], pct = chg/cs[0]*100;
+  box.innerHTML = `<div class="row" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px">
+      <div class="row" style="gap:4px">${[['1d','1D'],['5d','5D'],['1mo','1M'],['6mo','6M'],['1y','1Y']].map(([k,l])=>
+        `<button type="button" class="btn ghost" style="padding:5px 11px;${k===chartRange?'border-color:var(--brand);font-weight:700':''}" onclick="setRange('${k}')">${l}</button>`).join('')}</div>
+      <span class="${up?'gain':'loss'}" style="font-weight:600">${up?'+':''}${chg.toFixed(2)} (${up?'+':''}${pct.toFixed(2)}%)</span></div>
+    <div style="position:relative;margin-top:8px">
+      <svg id="csvg" viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block;touch-action:none" role="img" aria-label="Price chart for ${esc(quote.symbol)}">
+        <defs><linearGradient id="cg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${up?'#0b8f63':'#d6384a'}" stop-opacity=".25"/><stop offset="1" stop-color="${up?'#0b8f63':'#d6384a'}" stop-opacity="0"/></linearGradient></defs>
+        <path d="${area}" fill="url(#cg)"/><path d="${line}" fill="none" stroke="${col}" stroke-width="2" stroke-linejoin="round"/>
+        <text x="${L}" y="${T+8}" font-size="11" fill="#5c6785">₹${max.toFixed(2)}</text>
+        <text x="${L}" y="${H-B-4}" font-size="11" fill="#5c6785">₹${min.toFixed(2)}</text>
+        <text x="${L}" y="${H-6}" font-size="11" fill="#5c6785">${fmt(pts[0].t)}</text>
+        <text x="${W-R}" y="${H-6}" font-size="11" fill="#5c6785" text-anchor="end">${fmt(pts[pts.length-1].t)}</text>
+        <line id="cl" y1="${T}" y2="${H-B}" stroke="#5c6785" stroke-dasharray="3" style="display:none"/><circle id="cc" r="4" fill="${col}" style="display:none"/>
+      </svg><div id="ctip" style="position:absolute;top:0;left:0;pointer-events:none;display:none;background:var(--ink);color:#fff;padding:5px 9px;border-radius:8px;font-size:.8rem;white-space:nowrap"></div></div>`;
+  const svg = $('#csvg'), tip = $('#ctip');
+  const move = e => {
+    const r = svg.getBoundingClientRect(), cx = (e.touches ? e.touches[0].clientX : e.clientX) - r.left;
+    const i = Math.max(0, Math.min(pts.length-1, Math.round(((cx/r.width)*W - L)/(W-L-R)*(pts.length-1))));
+    const p = pts[i], px = x(i), py = y(p.c);
+    $('#cl').setAttribute('x1',px); $('#cl').setAttribute('x2',px); $('#cc').setAttribute('cx',px); $('#cc').setAttribute('cy',py);
+    $('#cl').style.display = $('#cc').style.display = 'block';
+    tip.style.display = 'block'; tip.innerHTML = '<b>'+money(p.c)+'</b><br>'+fmt(p.t);
+    tip.style.left = Math.min(r.width - tip.offsetWidth, Math.max(0, px/W*r.width - tip.offsetWidth/2))+'px'; tip.style.top = '-4px';
+  };
+  const leave = () => { $('#cl').style.display = $('#cc').style.display = 'none'; tip.style.display = 'none'; };
+  svg.addEventListener('mousemove', move); svg.addEventListener('touchmove', move); svg.addEventListener('mouseleave', leave); svg.addEventListener('touchend', leave);
 }
 function drawQuote(){
   const up = quote.changePct >= 0;
   $('#quote').innerHTML = `<div class="quote"><b>${esc(quote.symbol)}</b> <span style="color:var(--muted)">${esc(quote.name)}</span>
-    <div class="px">₹${quote.price.toFixed(2)} <small>INR</small></div>
-    <div class="${up?'gain':'loss'}">${up?'+':''}${quote.changePct.toFixed(2)}% today</div></div>
+    <div class="px" id="qpx">₹${quote.price.toFixed(2)} <small>INR</small></div>
+    <div id="qchg" class="${up?'gain':'loss'}">${up?'+':''}${quote.changePct.toFixed(2)}% today</div>
+    <small id="qtime" style="color:var(--muted)">Live, updates every 10 seconds</small></div>
     <label for="qty">Quantity</label><input id="qty" type="number" min="1" value="1">
     <div class="row" style="margin-top:14px"><button class="btn buy" style="flex:1" onclick="trade('BUY')">Buy</button>
     <button class="btn sell" style="flex:1" onclick="trade('SELL')">Sell</button></div>

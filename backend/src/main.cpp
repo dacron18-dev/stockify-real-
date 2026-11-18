@@ -129,6 +129,14 @@ int main() {
         authed(rq);
         reply(rs, 200, stockJson(market.getStock(cleanSymbol(rq.get_param_value("symbol")))));
     }));
+    svr.Get("/api/history", guard([&](const httplib::Request& rq, httplib::Response& rs) {
+        authed(rq);
+        std::string sym = cleanSymbol(rq.get_param_value("symbol"));
+        std::string range = rq.has_param("range") ? rq.get_param_value("range") : "1mo";
+        json pts = json::array();
+        for (const Candle& c : yahoo.getHistory(sym, range)) pts.push_back({{"t", c.time}, {"c", c.close}});
+        reply(rs, 200, {{"symbol", sym}, {"range", range}, {"points", pts}});
+    }));
     svr.Get("/api/watchlist", guard([&](const httplib::Request& rq, httplib::Response& rs) {
         authed(rq);
         std::vector<std::future<json>> fs;

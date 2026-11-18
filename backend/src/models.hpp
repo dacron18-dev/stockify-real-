@@ -37,6 +37,7 @@ inline OrderType parseOrderType(const std::string& s) {
 }
 
 struct Quote { std::string symbol, name, currency; double price = 0, prevClose = 0; };  // raw market data
+struct Candle { long long time = 0; double close = 0; };                               // one point on the price chart
 
 // ---------- Stock ----------
 class Stock {

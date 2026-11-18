@@ -7,6 +7,7 @@ class IMarketData {
 public:
     virtual ~IMarketData() = default;
     virtual Quote getQuote(const std::string& symbol) = 0;
+    virtual std::vector<Candle> getHistory(const std::string& symbol, const std::string& range) = 0;   // for the price chart
 };
 
 class IAuthService {
