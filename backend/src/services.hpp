@@ -133,7 +133,8 @@ public:
         : http_(hostOf(url)), key_(std::move(serviceKey)) {}
 
     void createProfile(const std::string& id, const std::string& email) override {
-        call("POST", "profiles", json{{"id", id}, {"email", email}}.dump(), "return=minimal");
+        call("POST", "profiles?on_conflict=id", json{{"id", id}, {"email", email}}.dump(),
+             "resolution=ignore-duplicates,return=minimal");   // safe to call repeatedly
     }
     std::unique_ptr<User> loadUser(const std::string& id) override {
         json p = call("GET", "profiles?id=eq." + id + "&select=*");

@@ -105,6 +105,7 @@ int main() {
     svr.Post("/api/login", guard([&](const httplib::Request& rq, httplib::Response& rs) {
         json b = bodyOf(rq);
         json s = auth.signIn(b.value("email", ""), b.value("password", ""));
+        repo.createProfile(s["id"].get<std::string>(), b.value("email", ""));   // self-heals a missing profile row
         auto u = repo.loadUser(s["id"].get<std::string>());
         reply(rs, 200, {{"token", s["token"]}, {"role", u->role()}, {"email", u->email()}});
     }));
