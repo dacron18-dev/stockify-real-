@@ -11,7 +11,7 @@ Learn trading with $100,000 of virtual money and live market prices.
 
 Vercel cannot run a C++ server, so the C++ API runs in Docker on Render and Vercel forwards `/api/*` to it (`frontend/vercel.json`).
 
-## OOP concepts used (for your viva)
+## OOP concepts used 
 | Concept | Where |
 |---|---|
 | Abstraction | `User`, `Order` (pure virtual); interfaces `IMarketData`, `IAuthService`, `IRepository` |
