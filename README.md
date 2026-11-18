@@ -25,11 +25,11 @@ Vercel cannot run a C++ server, so the C++ API runs in Docker on Render and Verc
 
 Full syllabus mapping: `docs/concept-map.md`. Extra topics demo: `backend/demo/concepts_demo.cpp`.
 
-Diagrams: `docs/class-diagram.mmd` and `docs/uml-diagrams.md` (use case, sequence, ER, deployment).
+Diagrams: `docs/class-diagram.mmd`, `docs/object-diagram.mmd` and `docs/uml-diagrams.md` (collaboration, sequence, use case, ER, deployment).
 
 ## Setup
 ### 1. Supabase
-1. Create a project. Run `database/schema.sql` in the SQL Editor.
+1. Create a project. Run `database/schema.sql` in the SQL Editor. (If you already ran an older version, run only `database/schema_update.sql`.)
 2. Authentication → Providers → Email: **turn off "Confirm email"** (so sign-up logs in immediately).
 3. Project Settings → API: copy the URL, `anon` key and `service_role` key.
 4. Sign up once in the app, then run: `update profiles set role='admin' where email='you@example.com';`
@@ -53,6 +53,9 @@ cmake -B build && cmake --build build
 SUPABASE_URL=... SUPABASE_ANON_KEY=... SUPABASE_SERVICE_KEY=... ./build/stockify
 ```
 Then serve `frontend/` with any static server and proxy `/api` to `localhost:8080` (or use `npx vercel dev`).
+
+## Features
+Traders: live quotes, buy/sell, portfolio with profit/loss, trade history, price alerts and notifications. Admin: all users and trades, reset balances, trigger a market event, start or stop the simulation thread.
 
 ## Known limits (mention these honestly)
 - The server writes `stockify.log` and `stockify.audit` on its own disk; on Render these reset on redeploy.

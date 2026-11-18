@@ -46,6 +46,7 @@ public:
         }
     }
     void stop() { { std::lock_guard<std::mutex> g(m_); stop_ = true; } cv_.notify_all(); }
+    void reset() { stop_ = false; }                         // allow restart after stop()
 };
 
 // Producer-consumer thread pool: callers produce jobs, workers consume them. submit() returns a future.

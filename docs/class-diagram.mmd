@@ -4,81 +4,135 @@ class User {
   <<abstract>>
   #string id_
   #string email_
-  +role() string*
-  +canTrade() bool*
+  +role()* string
+  +canTrade()* bool
 }
 class Trader {
-  -double balance_
+  -Account account_
   -Portfolio portfolio_
-  +debit(amt)
-  +credit(amt)
-  +portfolio() Portfolio
+  +placeBuyOrder(stock, quantity) Order
+  +placeSellOrder(stock, quantity) Order
+  +viewPortfolio() Portfolio
+  +setPriceAlert(stock, price) PriceAlert
 }
 class Admin
+class Account {
+  -int accountId
+  -Money cashBalance
+  +deposit(amount) void
+  +deductCash(amount) bool
+  +hasSufficientCash(amount) bool
+}
 class Portfolio {
-  -map~string,Holding~ holdings_
-  +add(symbol, qty, price)
-  +remove(symbol, qty)
+  -int portfolioId
+  +addHolding(holding) void
+  +removeHolding(symbol, quantity) void
+  +calculateValue(prices) double
 }
 class Holding {
-  +string symbol
-  +int qty
-  +double avgPrice
+  -string symbol
+  -int quantity
+  -double averagePrice
+  +increaseQuantity(amount, price) void
+  +decreaseQuantity(amount) void
+  +calculateValue(currentPrice) double
 }
 class Order {
   <<abstract>>
-  #string symbol_
-  #int qty_
-  #double price_
-  +execute(Trader)* void
-  +side()* string
-  +total() double
-  +create(side, symbol, qty, price)$ Order
+  -int orderId
+  -OrderType type
+  -int quantity
+  -double price
+  -OrderStatus status
+  -time timestamp
+  +validate() bool
+  +execute(trader)* Transaction
+  +cancel() void
 }
-class Timestamped
-class Loggable { <<abstract>> +toLogLine()* }
-class Serializable { <<abstract>> +toCsv()* }
-class Money { -double v_ +operator+() +operator*() +operator<<() }
-class ThreadPool
-class Runnable { <<interface>> +run()* }
-class Thread
-class PeriodicTask
-class FileLogger
-class AuditFile
 class BuyOrder
 class SellOrder
-class IMarketData { <<interface>> +getQuote(symbol) Quote }
-class IAuthService { <<interface>> +signUp() +signIn() +verify() }
-class IRepository { <<interface>> +loadUser() +saveTrader() +recordTrade() +listUsers() +listTrades() +setBalance() }
-class YahooMarketData
-class SupabaseAuth
-class SupabaseRepository
-class Quote { +symbol +name +price +prevClose }
-class TradeError
-class InsufficientFunds
-class UnknownSymbol
-class RingBuffer~T,N~
-class AuthError
+class Transaction {
+  -long transactionId
+  -OrderType type
+  -int quantity
+  -double executionPrice
+  +getValue() double
+}
+class Stock {
+  -string symbol
+  -string companyName
+  -double currentPrice
+  -double previousPrice
+  +updatePrice(newPrice) void
+  +getPrice() double
+}
+class Market {
+  -int marketId
+  -string name
+  -bool isOpen
+  +addStock(stock) void
+  +getStock(symbol) Stock
+  +updatePrices() void
+  +processEvent(event) void
+}
+class MarketEvent {
+  -int eventId
+  -string eventType
+  -double impactFactor
+  +apply(stock) void
+}
+class Simulation {
+  -int simulationId
+  -int tickInterval
+  -bool running
+  +start() void
+  +stop() void
+  +advanceTick() void
+  +generateMarketEvent() MarketEvent
+}
+class PriceAlert {
+  -int alertId
+  -double targetPrice
+  -bool triggered
+  +check(currentPrice) bool
+}
+class Notification {
+  -int notificationId
+  -string message
+  -bool read
+  +markAsRead() void
+}
+class OrderManager { +placeOrder(trader, type, symbol, qty) Transaction }
+class TransactionManager { +createTransaction(userId, tx) Transaction }
+class AlertManager { +checkAll() void }
+class OrderType { <<enumeration>> BUY SELL }
+class OrderStatus { <<enumeration>> PENDING EXECUTED CANCELLED REJECTED }
 User <|-- Trader
 User <|-- Admin
-Trader *-- Portfolio : owns
-Portfolio o-- Holding
 Order <|-- BuyOrder
 Order <|-- SellOrder
-Order ..> Trader : modifies
-IMarketData <|.. YahooMarketData
-IAuthService <|.. SupabaseAuth
-IRepository <|.. SupabaseRepository
-IMarketData ..> Quote
-SupabaseRepository ..> User : builds
-Order ..> TradeError : throws
-Timestamped <|-- Loggable : virtual
-Timestamped <|-- Serializable : virtual
-Loggable <|-- Order
-Serializable <|-- Order
-Runnable <|.. PeriodicTask
-Thread o-- Runnable
-Order ..> Money : total()
-FileLogger ..> RingBuffer
-InsufficientFunds --|> TradeError
-UnknownSymbol --|> TradeError
+Trader "1" --> "1" Account
+Trader "1" --> "1" Portfolio
+Trader "1" --> "0..*" Order : places
+Trader "1" --> "0..*" PriceAlert : sets
+Trader "1" --> "0..*" Notification : receives
+Portfolio "1" *-- "0..*" Holding
+Holding "*" --> "1" Stock
+Order "*" --> "1" Stock
+Order "1" --> "0..1" Transaction : creates
+Order ..> Account : uses
+Order ..> Portfolio : updates
+Market "1" o-- "1..*" Stock
+Simulation "1" --> "1" Market
+Simulation "1" --> "0..*" MarketEvent : generates
+MarketEvent "*" --> "1..*" Stock : affects
+PriceAlert "*" --> "1" Stock
+PriceAlert "1" --> "0..*" Notification : triggers
+OrderManager ..> Market
+OrderManager ..> TransactionManager
+OrderManager ..> Order
+AlertManager ..> PriceAlert
+AlertManager ..> Notification
+Simulation ..> AlertManager
+Order --> OrderType
+Order --> OrderStatus

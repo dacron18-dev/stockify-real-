@@ -119,10 +119,13 @@ async function traderView(){
         <div id="watch" class="row" style="flex-wrap:wrap;margin-top:14px"></div></section>
       <section class="card"><h2>Your holdings</h2><div class="wrap" id="hold"></div></section>
     </div>
-    <section class="card"><h2>Trade history</h2><div class="wrap" id="hist"></div></section></main>`;
+    <section class="card"><h2>Trade history</h2><div class="wrap" id="hist"></div></section>
+    <section class="card"><h2>Alerts and notifications</h2><div id="notes"></div><div id="alerts" style="margin-top:14px"></div></section></main>`;
   $('#q').onsubmit = async e => { e.preventDefault(); await getQuote($('#sym').value); };
   await refresh();
   loadWatch();
+  loadAlerts();
+  clearInterval(window.poll); window.poll = setInterval(loadAlerts, 30000);
 }
 
 async function loadWatch(){
@@ -142,8 +145,23 @@ function drawQuote(){
     <div class="${up?'gain':'loss'}">${up?'+':''}${quote.changePct.toFixed(2)}% today</div></div>
     <label for="qty">Quantity</label><input id="qty" type="number" min="1" value="1">
     <div class="row" style="margin-top:14px"><button class="btn buy" style="flex:1" onclick="trade('BUY')">Buy</button>
-    <button class="btn sell" style="flex:1" onclick="trade('SELL')">Sell</button></div>`;
+    <button class="btn sell" style="flex:1" onclick="trade('SELL')">Sell</button></div>
+    <label for="alertPx">Price alert</label>
+    <div class="row"><input id="alertPx" type="number" step="0.01" min="0" placeholder="Target price"><button class="btn ghost" onclick="setAlert()">Set alert</button></div>`;
 }
+async function setAlert(){
+  try{ const j = await api('/alerts', {method:'POST', body:{symbol:quote.symbol, price:parseFloat($('#alertPx').value)}}); toast(j.message); loadAlerts(); }
+  catch(err){ toast(err.message, true); }
+}
+async function loadAlerts(){
+  if(!$('#notes')) return;
+  try{
+    const [n, a] = await Promise.all([api('/notifications'), api('/alerts')]);
+    $('#notes').innerHTML = n.length ? n.map(x=>`<div class="row" style="justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--line)"><span style="${x.read?'color:var(--muted)':'font-weight:600'}">${esc(x.message)}</span>${x.read?'':`<button class="btn ghost" onclick="readNote(${x.id})">Mark read</button>`}</div>`).join('') : '<div class="empty">No notifications yet. Set a price alert from the trade panel.</div>';
+    $('#alerts').innerHTML = a.length ? '<table><tr><th>Symbol</th><th>Target</th><th>Direction</th><th>Status</th></tr>'+a.map(x=>`<tr><td><b>${esc(x.symbol)}</b></td><td>${Number(x.target).toFixed(2)}</td><td>${x.above?'rises to':'falls to'}</td><td>${x.triggered?'Triggered':'Waiting'}</td></tr>`).join('')+'</table>' : '';
+  }catch(e){}
+}
+async function readNote(id){ try{ await api('/notifications/read', {method:'POST', body:{id}}); loadAlerts(); }catch(e){ toast(e.message, true); } }
 async function trade(side){
   try{
     const j = await api('/trade', {method:'POST', body:{symbol:quote.symbol, side, qty:parseInt($('#qty').value,10)}});
@@ -170,11 +188,12 @@ async function refresh(){
 async function adminView(){
   $('#app').innerHTML = header() + `<main>
     <section class="card" id="sys"></section>
+    <section class="card"><h2>Market control</h2><div class="row" style="margin-top:12px;flex-wrap:wrap"><button class="btn" onclick="marketEvent()">Trigger market event</button><button class="btn ghost" onclick="simToggle(true)">Start simulation</button><button class="btn ghost" onclick="simToggle(false)">Stop simulation</button></div><p class="empty" style="margin:8px 0 0">A market event moves one stock’s price for everyone and can trigger price alerts.</p></section>
     <section class="card"><h2>Users</h2><div class="wrap" id="users"></div></section>
     <section class="card"><h2>Recent trades (all users)</h2><div class="wrap" id="all"></div></section></main>`;
   try{
     const [u, t, st] = await Promise.all([api('/admin/users'), api('/admin/trades'), api('/admin/stats')]);
-    $('#sys').innerHTML = `<h2>System</h2><div class="stats" style="margin-top:12px"><div class="stat"><small>Trades this session</small><b>${st.tradesThisSession}</b></div><div class="stat"><small>Audit records (binary file)</small><b>${st.auditRecords}</b></div><div class="stat"><small>Average trade value</small><b>${money(st.avgTradeValue)}</b></div></div><div class="empty">${st.recentLogs.length?st.recentLogs.map(esc).join('<br>'):'No log lines yet.'}</div>`;
+    $('#sys').innerHTML = `<h2>System</h2><div class="stats" style="margin-top:12px"><div class="stat"><small>Trades this session</small><b>${st.tradesThisSession}</b></div><div class="stat"><small>Audit records (binary file)</small><b>${st.auditRecords}</b></div><div class="stat"><small>Average trade value</small><b>${money(st.avgTradeValue)}</b></div><div class="stat"><small>Simulation</small><b>${st.simulationRunning?'Running':'Stopped'}</b></div></div><div class="empty">${st.recentLogs.length?st.recentLogs.map(esc).join('<br>'):'No log lines yet.'}</div>`;
     const mail = Object.fromEntries(u.map(x=>[x.id, x.email]));
     $('#users').innerHTML = `<table><tr><th>Email</th><th>Role</th><th>Cash</th><th></th></tr>` + u.map(x=>`<tr><td>${esc(x.email)}</td><td>${x.role}</td>
       <td>${money(x.balance)}</td><td>${x.role==='user'?`<button class="btn ghost" onclick="reset('${x.id}')">Reset to $100,000</button>`:''}</td></tr>`).join('') + '</table>';
@@ -182,6 +201,12 @@ async function adminView(){
       t.map(x=>`<tr><td>${new Date(x.created_at).toLocaleString()}</td><td>${esc(mail[x.user_id]||'')}</td><td>${x.side}</td><td>${esc(x.symbol)}</td><td>${x.qty}</td><td>${Number(x.price).toFixed(2)}</td></tr>`).join('') + '</table>'
       : '<div class="empty">No trades yet.</div>';
   }catch(err){ toast(err.message, true); }
+}
+async function marketEvent(){
+  try{ const e = await api('/admin/event', {method:'POST', body:{}}); toast(`${e.eventType}: ${e.symbol} ${e.impactPct>0?'+':''}${e.impactPct.toFixed(1)}%`); }catch(err){ toast(err.message, true); }
+}
+async function simToggle(run){
+  try{ const r = await api('/admin/simulation', {method:'POST', body:{run}}); toast(r.running?'Simulation running':'Simulation stopped'); adminView(); }catch(err){ toast(err.message, true); }
 }
 async function reset(id){
   if(!confirm('Reset this user’s cash to $100,000?')) return;

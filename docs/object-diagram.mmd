@@ -1,0 +1,18 @@
+classDiagram
+direction TB
+class rahul["rahul : Trader"] { traderId = 101  name = "Rahul"  email = "rahul@example.com" }
+class account["account : Account"] { accountId = 501  cashBalance = 25000.00 }
+class portfolio["portfolio : Portfolio"] { portfolioId = 701  totalValue = 37500.00 }
+class holding["holding : Holding"] { quantity = 15  averagePrice = 2400.00 }
+class order["order : Order"] { orderId = 9001  type = BUY  quantity = 10  price = 2500.00  status = EXECUTED }
+class transaction["transaction : Transaction"] { transactionId = 12001  type = BUY  quantity = 10  executionPrice = 2500.00 }
+class reliance["reliance : Stock"] { symbol = "RELIANCE"  companyName = "Reliance Industries"  currentPrice = 2500.00  previousPrice = 2475.00 }
+rahul -- account
+rahul -- portfolio
+rahul -- order
+order -- account
+order -- portfolio
+order -- transaction
+order -- reliance
+portfolio -- holding
+holding -- reliance

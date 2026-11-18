@@ -1,14 +1,11 @@
-// Stockify services: interfaces (abstraction) + Yahoo Finance / Supabase implementations.
+// Concrete services: HTTPS client, Yahoo Finance, Supabase Auth and Supabase database.
 #pragma once
 #ifndef CPPHTTPLIB_OPENSSL_SUPPORT
 #define CPPHTTPLIB_OPENSSL_SUPPORT
 #endif
-#include <chrono>
 #include <cstdlib>
-#include <mutex>
 #include <httplib.h>
-#include "models.hpp"
-#include "core.hpp"
+#include "interfaces.hpp"
 
 inline std::string env(const char* k) { const char* v = std::getenv(k); return v ? v : ""; }
 inline std::string hostOf(std::string u) {
@@ -17,13 +14,13 @@ inline std::string hostOf(std::string u) {
     while (!u.empty() && u.back() == '/') u.pop_back();
     return u;
 }
+inline bool isJwt(const std::string& key) { return key.rfind("eyJ", 0) == 0; }   // legacy anon/service keys
 
 struct HttpResult {
     int status; std::string body;
     json asJson() const { return json::parse(body.empty() ? "null" : body, nullptr, false); }
 };
 
-// Small wrapper so the rest of the code never touches raw HTTP.
 class HttpsClient {
     std::string host_;
 public:
@@ -43,42 +40,12 @@ public:
     }
 };
 
-// ================= Interfaces =================
-struct Quote {
-    std::string symbol, name, currency;
-    double price = 0, prevClose = 0;
-    json toJson() const {
-        double chg = prevClose > 0 ? (price - prevClose) / prevClose * 100 : 0;
-        return {{"symbol", symbol}, {"name", name}, {"currency", currency},
-                {"price", price}, {"prevClose", prevClose}, {"changePct", chg}};
-    }
-};
-
-class IMarketData {
-public:
-    virtual ~IMarketData() = default;
-    virtual Quote getQuote(const std::string& symbol) = 0;
-};
-
-class IAuthService {
-public:
-    virtual ~IAuthService() = default;
-    virtual std::string signUp(const std::string& email, const std::string& pw) = 0;   // returns user id
-    virtual json signIn(const std::string& email, const std::string& pw) = 0;          // {token, id}
-    virtual std::string verify(const std::string& token) = 0;                          // returns user id
-};
-
-class IRepository {
-public:
-    virtual ~IRepository() = default;
-    virtual void createProfile(const std::string& id, const std::string& email) = 0;
-    virtual std::unique_ptr<User> loadUser(const std::string& id) = 0;
-    virtual void saveTrader(const Trader& t) = 0;
-    virtual void recordTrade(const std::string& userId, const Order& o) = 0;
-    virtual json listUsers() = 0;
-    virtual json listTrades(const std::string& userId = "") = 0;
-    virtual void setBalance(const std::string& id, double balance) = 0;
-};
+inline std::string errText(const json& j, const std::string& fallback) {
+    if (j.is_object())
+        for (const char* k : {"error_description", "msg", "message"})
+            if (j.contains(k) && j[k].is_string()) return j[k].get<std::string>();
+    return fallback;
+}
 
 // ================= Yahoo Finance =================
 class YahooMarketData : public IMarketData {
@@ -87,8 +54,7 @@ class YahooMarketData : public IMarketData {
 public:
     Quote getQuote(const std::string& s) override {
         if (auto hit = cache_.get(s)) return *hit;
-        auto r = http_.send("GET", "/v8/finance/chart/" + s + "?interval=1d&range=1d",
-                            {{"User-Agent", "Mozilla/5.0"}});
+        auto r = http_.send("GET", "/v8/finance/chart/" + s + "?interval=1d&range=1d", {{"User-Agent", "Mozilla/5.0"}});
         json j = r.asJson();
         if (r.status != 200 || j.is_discarded() || !j.contains("chart") ||
             !j["chart"].contains("result") || j["chart"]["result"].is_null())
@@ -111,20 +77,25 @@ class SupabaseAuth : public IAuthService {
     HttpsClient http_;
     std::string anon_;
     httplib::Headers hdr(const std::string& bearer = "") const {
-        return {{"apikey", anon_}, {"Authorization", "Bearer " + (bearer.empty() ? anon_ : bearer)}};
+        httplib::Headers h{{"apikey", anon_}};
+        if (!bearer.empty()) h.emplace("Authorization", "Bearer " + bearer);
+        else if (isJwt(anon_)) h.emplace("Authorization", "Bearer " + anon_);
+        return h;
     }
 public:
     SupabaseAuth(const std::string& url, std::string anon) : http_(hostOf(url)), anon_(std::move(anon)) {}
     std::string signUp(const std::string& e, const std::string& p) override {
         auto r = http_.send("POST", "/auth/v1/signup", hdr(), json{{"email", e}, {"password", p}}.dump());
         json j = r.asJson();
-        if (r.status >= 400) throw AuthError(j.value("msg", j.value("error_description", "Sign-up failed")));
-        return j.contains("user") ? j["user"]["id"].get<std::string>() : j["id"].get<std::string>();
+        if (r.status >= 400) throw AuthError(errText(j, "Sign-up failed"));
+        if (j.contains("user") && j["user"].contains("id")) return j["user"]["id"].get<std::string>();
+        if (j.contains("id")) return j["id"].get<std::string>();
+        throw AuthError("Sign-up failed");
     }
     json signIn(const std::string& e, const std::string& p) override {
         auto r = http_.send("POST", "/auth/v1/token?grant_type=password", hdr(), json{{"email", e}, {"password", p}}.dump());
         json j = r.asJson();
-        if (r.status >= 400) throw AuthError("Wrong email or password");
+        if (r.status >= 400) throw AuthError(errText(j, "Login failed"));   // real reason from Supabase
         return {{"token", j["access_token"]}, {"id", j["user"]["id"]}};
     }
     std::string verify(const std::string& token) override {
@@ -139,7 +110,8 @@ class SupabaseRepository : public IRepository {
     HttpsClient http_;
     std::string key_;
     httplib::Headers hdr(const std::string& prefer = "") const {
-        httplib::Headers h{{"apikey", key_}, {"Authorization", "Bearer " + key_}};
+        httplib::Headers h{{"apikey", key_}};
+        if (isJwt(key_)) h.emplace("Authorization", "Bearer " + key_);
         if (!prefer.empty()) h.emplace("Prefer", prefer);
         return h;
     }
@@ -148,6 +120,13 @@ class SupabaseRepository : public IRepository {
         auto r = http_.send(m, "/rest/v1/" + path, hdr(prefer), body);
         if (r.status >= 400) throw std::runtime_error("Database error: " + r.body);
         return r.body.empty() ? json::array() : r.asJson();
+    }
+    static std::vector<PriceAlert> toAlerts(const json& rows) {
+        std::vector<PriceAlert> out;
+        for (auto& a : rows)
+            out.emplace_back(a["id"].get<int>(), a["user_id"].get<std::string>(), a["symbol"].get<std::string>(),
+                             a["target_price"].get<double>(), a["above"].get<bool>(), a["triggered"].get<bool>());
+        return out;
     }
 public:
     SupabaseRepository(const std::string& url, std::string serviceKey)
@@ -163,27 +142,53 @@ public:
         if (row["role"] == "admin") return std::make_unique<Admin>(id, row["email"]);
         auto t = std::make_unique<Trader>(id, row["email"], row["balance"].get<double>());
         for (auto& h : call("GET", "holdings?user_id=eq." + id + "&select=*"))
-            t->portfolio().set({h["symbol"], h["qty"], h["avg_price"].get<double>()});
+            t->portfolio().addHolding(Holding(h["symbol"], h["qty"], h["avg_price"].get<double>()));
         return t;
     }
     void saveTrader(const Trader& t) override {
         call("PATCH", "profiles?id=eq." + t.id(), json{{"balance", t.balance()}}.dump(), "return=minimal");
         call("DELETE", "holdings?user_id=eq." + t.id());
         json rows = json::array();
-        for (auto& [sym, h] : t.portfolio().all())
-            rows.push_back({{"user_id", t.id()}, {"symbol", sym}, {"qty", h.qty}, {"avg_price", h.avgPrice}});
+        for (auto& [sym, h] : t.portfolio().holdings())
+            rows.push_back({{"user_id", t.id()}, {"symbol", sym}, {"qty", h.quantity()}, {"avg_price", h.averagePrice()}});
         if (!rows.empty()) call("POST", "holdings", rows.dump(), "return=minimal");
     }
-    void recordTrade(const std::string& uid, const Order& o) override {
-        call("POST", "trades", json{{"user_id", uid}, {"symbol", o.symbol()}, {"side", o.side()},
-                                    {"qty", o.qty()}, {"price", o.price()}}.dump(), "return=minimal");
+    void recordTransaction(const std::string& uid, const Transaction& tx) override {
+        call("POST", "trades", json{{"user_id", uid}, {"symbol", tx.symbol()}, {"side", toString(tx.type())},
+                                    {"qty", tx.quantity()}, {"price", tx.executionPrice()}}.dump(), "return=minimal");
     }
     json listUsers() override { return call("GET", "profiles?select=id,email,role,balance&order=created_at.desc"); }
-    json listTrades(const std::string& uid = "") override {
+    json listTransactions(const std::string& uid = "") override {
         std::string f = uid.empty() ? "" : "&user_id=eq." + uid;
         return call("GET", "trades?select=*&order=created_at.desc&limit=100" + f);
     }
     void setBalance(const std::string& id, double b) override {
         call("PATCH", "profiles?id=eq." + id, json{{"balance", b}}.dump(), "return=minimal");
+    }
+    int saveAlert(const PriceAlert& a) override {
+        json r = call("POST", "price_alerts", json{{"user_id", a.ownerId()}, {"symbol", a.symbol()},
+                      {"target_price", a.target()}, {"above", a.above()}}.dump(), "return=representation");
+        return r[0]["id"].get<int>();
+    }
+    std::vector<PriceAlert> activeAlerts() override { return toAlerts(call("GET", "price_alerts?triggered=eq.false&select=*")); }
+    std::vector<PriceAlert> alertsFor(const std::string& uid) override {
+        return toAlerts(call("GET", "price_alerts?user_id=eq." + uid + "&select=*&order=created_at.desc&limit=50"));
+    }
+    void markTriggered(int id) override {
+        call("PATCH", "price_alerts?id=eq." + std::to_string(id), json{{"triggered", true}}.dump(), "return=minimal");
+    }
+    void addNotification(const Notification& n) override {
+        call("POST", "notifications", json{{"user_id", n.userId()}, {"message", n.message()}}.dump(), "return=minimal");
+    }
+    std::vector<Notification> notifications(const std::string& uid) override {
+        std::vector<Notification> out;
+        for (auto& n : call("GET", "notifications?user_id=eq." + uid + "&select=*&order=created_at.desc&limit=30"))
+            out.emplace_back(n["id"].get<int>(), uid, n["message"].get<std::string>(), n["is_read"].get<bool>(),
+                             n["created_at"].get<std::string>());
+        return out;
+    }
+    void markNotificationRead(int id, const std::string& uid) override {
+        call("PATCH", "notifications?id=eq." + std::to_string(id) + "&user_id=eq." + uid,
+             json{{"is_read", true}}.dump(), "return=minimal");
     }
 };

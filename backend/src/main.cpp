@@ -1,53 +1,64 @@
-// Stockify API server (C++20). Routes are thin; all rules live in the OOP classes.
+// Stockify API server (C++20). Routes are thin; the rules live in the OOP classes.
 #include <algorithm>
 #include <cctype>
 #include <cstring>
 #include <future>
 #include "services.hpp"
-#include "threads.hpp"
+#include "engine.hpp"
 #include "files.hpp"
 
 static std::string cleanSymbol(std::string s) {
     std::transform(s.begin(), s.end(), s.begin(), ::toupper);
     bool ok = !s.empty() && s.size() <= 15 &&
               std::all_of(s.begin(), s.end(), [](char c) { return std::isalnum((unsigned char)c) || c == '.' || c == '-' || c == '^' || c == '='; });
-    if (!ok) throw TradeError("Enter a valid ticker, e.g. AAPL or RELIANCE.NS");
+    if (!ok) throw ValidationError("Enter a valid ticker, e.g. AAPL or RELIANCE.NS");
     return s;
 }
 static void reply(httplib::Response& rs, int code, const json& j) { rs.status = code; rs.set_content(j.dump(), "application/json"); }
 static json bodyOf(const httplib::Request& rq) {
-    json j = json::parse(rq.body, nullptr, false);
-    if (j.is_discarded() || !j.is_object()) throw TradeError("Invalid request body");
+    json j = json::parse(rq.body.empty() ? "{}" : rq.body, nullptr, false);
+    if (j.is_discarded() || !j.is_object()) throw ValidationError("Invalid request body");
     return j;
 }
-
-static AuditRecord makeRecord(const Order& o) {
+static json stockJson(const Stock& s) {
+    return {{"symbol", s.symbol()}, {"name", s.companyName()}, {"currency", s.currency()}, {"price", s.getPrice()},
+            {"prevClose", s.previousPrice()}, {"changePct", s.changePct()}};
+}
+static json alertJson(const PriceAlert& a) {
+    return {{"id", a.id()}, {"symbol", a.symbol()}, {"target", a.target()}, {"above", a.above()}, {"triggered", a.triggered()}};
+}
+static json noteJson(const Notification& n) {
+    return {{"id", n.id()}, {"message", n.message()}, {"read", n.read()}, {"createdAt", n.createdAt()}};
+}
+static AuditRecord makeRecord(const Transaction& t) {
     AuditRecord r{};
-    std::strncpy(r.symbol, o.symbol().c_str(), sizeof r.symbol - 1);
-    r.side = o.side()[0];
-    r.qty = o.qty();
-    r.price = o.price();
-    r.ts = static_cast<long long>(o.at());
+    std::strncpy(r.symbol, t.symbol().c_str(), sizeof r.symbol - 1);
+    r.side = toString(t.type())[0];
+    r.qty = t.quantity();
+    r.price = t.executionPrice();
+    r.ts = static_cast<long long>(t.at());
     return r;
 }
 
 int main() {
-    YahooMarketData market;
+    const double START_CASH = 100000.0;
+    const std::vector<std::string> watchlist{"AAPL", "MSFT", "GOOGL", "TSLA", "NVDA"};
+
+    YahooMarketData yahoo;
     SupabaseAuth auth(env("SUPABASE_URL"), env("SUPABASE_ANON_KEY"));
     SupabaseRepository repo(env("SUPABASE_URL"), env("SUPABASE_SERVICE_KEY"));
-    const double START_CASH = 100000.0;
+    Market market(1, "Global Equities", yahoo);
+    TransactionManager txm(repo);
+    OrderManager orders(market, txm, repo);
+    AlertManager alerts(repo, market);
+    Simulation sim(1, 25000, market, alerts);            // background thread: refresh prices + check alerts
+    for (auto& s : watchlist) market.addStock(Stock(s));
+    sim.start();
 
-    // Logging and background work
     FileLogger logger("stockify.log");
     AuditFile audit("stockify.audit");
-    ThreadPool bg(1);                                   // one writer thread: producer-consumer queue
+    ThreadPool bg(1);                                    // single writer thread (producer-consumer queue)
     std::atomic<int> tradeCount{0};
-    const std::vector<std::string> watchlist{"AAPL", "MSFT", "GOOGL", "TSLA", "NVDA"};
-    PeriodicTask refresher([&] {                        // keeps popular prices warm in the cache
-        for (auto& s : watchlist) { try { market.getQuote(s); } catch (...) {} }
-    }, 25000);
-    Thread refreshThread(refresher);
-    refreshThread.start();
 
     auto authed = [&](const httplib::Request& rq) {
         std::string h = rq.get_header_value("Authorization");
@@ -62,15 +73,14 @@ int main() {
     auto adminOnly = [&](std::unique_ptr<User>& u) {
         if (!dynamic_cast<Admin*>(u.get())) throw AuthError("Admins only");
     };
-    // Wraps every route with the same error handling.
     auto guard = [](auto fn) {
         return [fn](const httplib::Request& rq, httplib::Response& rs) {
             try { fn(rq, rs); }
-            catch (const AuthError& e)  { reply(rs, 401, {{"error", e.what()}}); }
+            catch (const AuthError& e)         { reply(rs, 401, {{"error", e.what()}}); }
             catch (const InsufficientFunds& e) { reply(rs, 402, {{"error", e.what()}}); }   // derived first
-            catch (const TradeError& e) { reply(rs, 400, {{"error", e.what()}}); }          // then base
-            catch (const std::exception& e) { reply(rs, 500, {{"error", e.what()}}); }
-            catch (...) { reply(rs, 500, {{"error", "Unexpected error"}}); }                // catch-all
+            catch (const TradeError& e)        { reply(rs, 400, {{"error", e.what()}}); }   // then base
+            catch (const std::exception& e)    { reply(rs, 500, {{"error", e.what()}}); }
+            catch (...)                        { reply(rs, 500, {{"error", "Unexpected error"}}); }
         };
     };
 
@@ -82,16 +92,16 @@ int main() {
     svr.Get("/", [](const httplib::Request&, httplib::Response& rs) { rs.set_content("Stockify API is running", "text/plain"); });
     svr.Get("/api/health", [](const httplib::Request&, httplib::Response& rs) { reply(rs, 200, {{"ok", true}}); });
 
+    // ---- auth ----
     svr.Post("/api/signup", guard([&](const httplib::Request& rq, httplib::Response& rs) {
         json b = bodyOf(rq);
         std::string email = b.value("email", ""), pw = b.value("password", "");
-        if (email.empty() || pw.size() < 6) throw TradeError("Use a valid email and a password of 6+ characters");
+        if (email.empty() || pw.size() < 6) throw ValidationError("Use a valid email and a password of 6+ characters");
         std::string id = auth.signUp(email, pw);
         repo.createProfile(id, email);
         json s = auth.signIn(email, pw);
         reply(rs, 200, {{"token", s["token"]}, {"role", "user"}, {"email", email}});
     }));
-
     svr.Post("/api/login", guard([&](const httplib::Request& rq, httplib::Response& rs) {
         json b = bodyOf(rq);
         json s = auth.signIn(b.value("email", ""), b.value("password", ""));
@@ -99,93 +109,122 @@ int main() {
         reply(rs, 200, {{"token", s["token"]}, {"role", u->role()}, {"email", u->email()}});
     }));
 
+    // ---- trading ----
     svr.Get("/api/quote", guard([&](const httplib::Request& rq, httplib::Response& rs) {
         authed(rq);
-        reply(rs, 200, market.getQuote(cleanSymbol(rq.get_param_value("symbol"))).toJson());
+        reply(rs, 200, stockJson(market.getStock(cleanSymbol(rq.get_param_value("symbol")))));
     }));
-
+    svr.Get("/api/watchlist", guard([&](const httplib::Request& rq, httplib::Response& rs) {
+        authed(rq);
+        std::vector<std::future<json>> fs;
+        for (auto& s : watchlist)
+            fs.push_back(std::async(std::launch::async, [&market, s] {
+                try { return stockJson(market.getStock(s)); } catch (...) { return json(nullptr); }
+            }));
+        json out = json::array();
+        for (auto& f : fs) { json q = f.get(); if (!q.is_null()) out.push_back(q); }
+        reply(rs, 200, out);
+    }));
     svr.Get("/api/portfolio", guard([&](const httplib::Request& rq, httplib::Response& rs) {
         auto u = authed(rq);
         Trader& t = trader(u);
-        // Fetch all quotes in parallel (futures); worker exceptions resurface at fut.get().
-        std::vector<std::pair<Holding, std::future<double>>> jobs;
-        for (auto& [sym, h] : t.portfolio().all())
-            jobs.emplace_back(h, std::async(std::launch::async, [&market, sym = sym] { return market.getQuote(sym).price; }));
+        std::vector<std::pair<std::string, std::future<double>>> jobs;     // quotes fetched in parallel
+        for (auto& [sym, h] : t.viewPortfolio().holdings())
+            jobs.emplace_back(sym, std::async(std::launch::async, [&market, sym = sym] { return market.getStock(sym).getPrice(); }));
+        std::map<std::string, double> prices;
+        for (auto& [sym, fut] : jobs) prices[sym] = fut.get();             // worker exceptions resurface here
         json rows = json::array();
-        Money invested;
-        for (auto& [h, fut] : jobs) {
-            double px = fut.get();
-            invested += Money(px) * h.qty;
-            rows.push_back({{"symbol", h.symbol}, {"qty", h.qty}, {"avgPrice", h.avgPrice}, {"price", px},
-                            {"value", px * h.qty}, {"pnl", (px - h.avgPrice) * h.qty}});
+        for (auto& [sym, h] : t.viewPortfolio().holdings()) {
+            double px = prices[sym];
+            rows.push_back({{"symbol", sym}, {"qty", h.quantity()}, {"avgPrice", h.averagePrice()}, {"price", px},
+                            {"value", h.calculateValue(px)}, {"pnl", (px - h.averagePrice()) * h.quantity()}});
         }
-        Money equity = Money(t.balance()) + invested;
+        Money equity = Money(t.balance()) + Money(t.viewPortfolio().calculateValue(prices));
         reply(rs, 200, {{"email", t.email()}, {"balance", t.balance()}, {"holdings", rows},
                         {"equity", static_cast<double>(equity)}, {"startCash", START_CASH}});
     }));
-
     svr.Post("/api/trade", guard([&](const httplib::Request& rq, httplib::Response& rs) {
         auto u = authed(rq);
         Trader& t = trader(u);
         json b = bodyOf(rq);
-        std::string sym = cleanSymbol(b.value("symbol", ""));
-        Quote q = market.getQuote(sym);                       // server decides the price
-        auto order = Order::create(b.value("side", ""), sym, b.value("qty", 0), q.price);
-        order->execute(t);                                    // polymorphic call
-        repo.saveTrader(t);
-        repo.recordTrade(t.id(), *order);
+        Transaction tx = orders.placeOrder(t, parseOrderType(b.value("side", "")), cleanSymbol(b.value("symbol", "")), b.value("qty", 0));
         ++tradeCount;
-        bg.submit([&logger, &audit, line = order->toLogLine(), rec = makeRecord(*order)] {
-            logger.write(line);                         // text log
-            audit.append(rec);                          // binary audit file
-        });
-        reply(rs, 200, {{"message", order->side() + " " + std::to_string(order->qty()) + " " + sym + " filled"},
+        bg.submit([&logger, &audit, line = tx.toLogLine(), rec = makeRecord(tx)] { logger.write(line); audit.append(rec); });
+        reply(rs, 200, {{"message", toString(tx.type()) + " " + std::to_string(tx.quantity()) + " " + tx.symbol() + " filled"},
                         {"balance", t.balance()}});
     }));
-
     svr.Get("/api/trades", guard([&](const httplib::Request& rq, httplib::Response& rs) {
         auto u = authed(rq);
-        reply(rs, 200, repo.listTrades(trader(u).id()));
+        reply(rs, 200, repo.listTransactions(trader(u).id()));
     }));
 
+    // ---- price alerts and notifications ----
+    svr.Post("/api/alerts", guard([&](const httplib::Request& rq, httplib::Response& rs) {
+        auto u = authed(rq);
+        Trader& t = trader(u);
+        json b = bodyOf(rq);
+        double price = b.value("price", 0.0);
+        if (price <= 0) throw ValidationError("Enter a target price above 0");
+        PriceAlert a = t.setPriceAlert(market.getStock(cleanSymbol(b.value("symbol", ""))), price);
+        reply(rs, 200, {{"id", repo.saveAlert(a)}, {"message", "Alert set for " + a.symbol() + " at " + Formatter<double>::fmt(price)}});
+    }));
+    svr.Get("/api/alerts", guard([&](const httplib::Request& rq, httplib::Response& rs) {
+        auto u = authed(rq);
+        json out = json::array();
+        for (auto& a : repo.alertsFor(trader(u).id())) out.push_back(alertJson(a));
+        reply(rs, 200, out);
+    }));
+    svr.Get("/api/notifications", guard([&](const httplib::Request& rq, httplib::Response& rs) {
+        auto u = authed(rq);
+        json out = json::array();
+        for (auto& n : repo.notifications(trader(u).id())) out.push_back(noteJson(n));
+        reply(rs, 200, out);
+    }));
+    svr.Post("/api/notifications/read", guard([&](const httplib::Request& rq, httplib::Response& rs) {
+        auto u = authed(rq);
+        repo.markNotificationRead(bodyOf(rq).value("id", 0), trader(u).id());
+        reply(rs, 200, {{"ok", true}});
+    }));
+
+    // ---- admin ----
     svr.Get("/api/admin/users", guard([&](const httplib::Request& rq, httplib::Response& rs) {
         auto u = authed(rq); adminOnly(u);
         reply(rs, 200, repo.listUsers());
     }));
     svr.Get("/api/admin/trades", guard([&](const httplib::Request& rq, httplib::Response& rs) {
         auto u = authed(rq); adminOnly(u);
-        reply(rs, 200, repo.listTrades());
+        reply(rs, 200, repo.listTransactions());
     }));
     svr.Post("/api/admin/reset", guard([&](const httplib::Request& rq, httplib::Response& rs) {
         auto u = authed(rq); adminOnly(u);
         repo.setBalance(bodyOf(rq).value("id", ""), START_CASH);
         reply(rs, 200, {{"ok", true}});
     }));
-
-    svr.Get("/api/watchlist", guard([&](const httplib::Request& rq, httplib::Response& rs) {
-        authed(rq);
-        std::vector<std::future<json>> fs;
-        for (auto& s : watchlist)
-            fs.push_back(std::async(std::launch::async, [&market, s] {
-                try { return market.getQuote(s).toJson(); } catch (...) { return json(nullptr); }
-            }));
-        json out = json::array();
-        for (auto& f : fs) { json q = f.get(); if (!q.is_null()) out.push_back(q); }
-        reply(rs, 200, out);
+    svr.Post("/api/admin/event", guard([&](const httplib::Request& rq, httplib::Response& rs) {
+        auto u = authed(rq); adminOnly(u);
+        std::string sym = bodyOf(rq).value("symbol", "");
+        sym = sym.empty() ? watchlist[std::chrono::steady_clock::now().time_since_epoch().count() % watchlist.size()] : cleanSymbol(sym);
+        MarketEvent e = sim.generateMarketEvent();
+        market.processEvent(e, sym);
+        reply(rs, 200, {{"symbol", sym}, {"eventType", e.eventType()}, {"impactPct", e.impactFactor() * 100}});
     }));
-
+    svr.Post("/api/admin/simulation", guard([&](const httplib::Request& rq, httplib::Response& rs) {
+        auto u = authed(rq); adminOnly(u);
+        if (bodyOf(rq).value("run", true)) sim.start(); else sim.stop();
+        reply(rs, 200, {{"running", sim.running()}});
+    }));
     svr.Get("/api/admin/stats", guard([&](const httplib::Request& rq, httplib::Response& rs) {
         auto u = authed(rq); adminOnly(u);
-        std::vector<double> sizes;                      // read binary file with random access
+        std::vector<double> sizes;                       // binary file, random access
         for (std::size_t i = 0, n = audit.count(); i < n; ++i)
             if (auto r = audit.read(i)) sizes.push_back(r->qty * r->price);
         reply(rs, 200, {{"tradesThisSession", tradeCount.load()}, {"ordersCreated", Order::created()},
                         {"auditRecords", audit.count()}, {"avgTradeValue", average(sizes)},
-                        {"recentLogs", logger.recent()}});
+                        {"simulationRunning", sim.running()}, {"ticks", sim.ticks()},
+                        {"marketOpen", market.isOpen()}, {"recentLogs", logger.recent()}});
     }));
 
     int port = env("PORT").empty() ? 8080 : std::stoi(env("PORT"));
     svr.listen("0.0.0.0", port);
-    refresher.stop();                                   // clean shutdown: stop, then join
-    refreshThread.join();
+    sim.stop();                                          // clean shutdown
 }
