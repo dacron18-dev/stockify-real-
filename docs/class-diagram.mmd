@@ -35,6 +35,16 @@ class Order {
   +total() double
   +create(side, symbol, qty, price)$ Order
 }
+class Timestamped
+class Loggable { <<abstract>> +toLogLine()* }
+class Serializable { <<abstract>> +toCsv()* }
+class Money { -double v_ +operator+() +operator*() +operator<<() }
+class ThreadPool
+class Runnable { <<interface>> +run()* }
+class Thread
+class PeriodicTask
+class FileLogger
+class AuditFile
 class BuyOrder
 class SellOrder
 class IMarketData { <<interface>> +getQuote(symbol) Quote }
@@ -45,6 +55,9 @@ class SupabaseAuth
 class SupabaseRepository
 class Quote { +symbol +name +price +prevClose }
 class TradeError
+class InsufficientFunds
+class UnknownSymbol
+class RingBuffer~T,N~
 class AuthError
 User <|-- Trader
 User <|-- Admin
@@ -59,3 +72,13 @@ IRepository <|.. SupabaseRepository
 IMarketData ..> Quote
 SupabaseRepository ..> User : builds
 Order ..> TradeError : throws
+Timestamped <|-- Loggable : virtual
+Timestamped <|-- Serializable : virtual
+Loggable <|-- Order
+Serializable <|-- Order
+Runnable <|.. PeriodicTask
+Thread o-- Runnable
+Order ..> Money : total()
+FileLogger ..> RingBuffer
+InsufficientFunds --|> TradeError
+UnknownSymbol --|> TradeError

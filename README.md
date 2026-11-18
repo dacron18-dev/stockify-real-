@@ -5,7 +5,7 @@ Learn trading with $100,000 of virtual money and live market prices.
 | Layer | Tech |
 |---|---|
 | Frontend | HTML/CSS/JS, hosted on **Vercel** |
-| Backend | **C++17** (cpp-httplib + nlohmann/json), Docker, hosted on **Render** |
+| Backend | **C++20** (cpp-httplib + nlohmann/json), Docker, hosted on **Render** |
 | Database + Auth | **Supabase** (Postgres + email/password auth) |
 | Market data | **Yahoo Finance** chart API |
 
@@ -22,6 +22,8 @@ Vercel cannot run a C++ server, so the C++ API runs in Docker on Render and Verc
 | Factory pattern | `Order::create("BUY"/"SELL", ...)` |
 | Exception handling | `TradeError`, `AuthError`, mapped to HTTP 400 / 401 |
 | Smart pointers, STL, lambdas | `unique_ptr<User/Order>`, `map`, route guard lambda |
+
+Full syllabus mapping: `docs/concept-map.md`. Extra topics demo: `backend/demo/concepts_demo.cpp`.
 
 Diagrams: `docs/class-diagram.mmd` and `docs/uml-diagrams.md` (use case, sequence, ER, deployment).
 
@@ -53,6 +55,7 @@ SUPABASE_URL=... SUPABASE_ANON_KEY=... SUPABASE_SERVICE_KEY=... ./build/stockify
 Then serve `frontend/` with any static server and proxy `/api` to `localhost:8080` (or use `npx vercel dev`).
 
 ## Known limits (mention these honestly)
+- The server writes `stockify.log` and `stockify.audit` on its own disk; on Render these reset on redeploy.
 - Prices are market prices from Yahoo's unofficial endpoint and may be delayed; it can rate-limit.
 - Cash is shown in USD; Indian tickers (e.g. `RELIANCE.NS`) are priced in INR with no conversion.
 - Saving a trade makes several database calls, not one atomic transaction (a Postgres function would fix this).

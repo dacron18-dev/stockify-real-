@@ -115,12 +115,20 @@ async function traderView(){
     <div class="grid">
       <section class="card"><h2>Trade</h2>
         <form id="q" class="row" style="margin-top:12px"><input id="sym" placeholder="Ticker, e.g. AAPL or TCS.NS" aria-label="Ticker symbol" required><button class="btn">Get price</button></form>
-        <div id="quote"></div></section>
+        <div id="quote"></div>
+        <div id="watch" class="row" style="flex-wrap:wrap;margin-top:14px"></div></section>
       <section class="card"><h2>Your holdings</h2><div class="wrap" id="hold"></div></section>
     </div>
     <section class="card"><h2>Trade history</h2><div class="wrap" id="hist"></div></section></main>`;
   $('#q').onsubmit = async e => { e.preventDefault(); await getQuote($('#sym').value); };
   await refresh();
+  loadWatch();
+}
+
+async function loadWatch(){
+  try{ const w = await api('/watchlist');
+    $('#watch').innerHTML = w.map(q=>`<button type="button" class="btn ghost" onclick="getQuote('${esc(q.symbol)}')">${esc(q.symbol)} ${q.price.toFixed(2)}</button>`).join('');
+  }catch(e){}
 }
 
 async function getQuote(sym){
@@ -161,10 +169,12 @@ async function refresh(){
 
 async function adminView(){
   $('#app').innerHTML = header() + `<main>
+    <section class="card" id="sys"></section>
     <section class="card"><h2>Users</h2><div class="wrap" id="users"></div></section>
     <section class="card"><h2>Recent trades (all users)</h2><div class="wrap" id="all"></div></section></main>`;
   try{
-    const [u, t] = await Promise.all([api('/admin/users'), api('/admin/trades')]);
+    const [u, t, st] = await Promise.all([api('/admin/users'), api('/admin/trades'), api('/admin/stats')]);
+    $('#sys').innerHTML = `<h2>System</h2><div class="stats" style="margin-top:12px"><div class="stat"><small>Trades this session</small><b>${st.tradesThisSession}</b></div><div class="stat"><small>Audit records (binary file)</small><b>${st.auditRecords}</b></div><div class="stat"><small>Average trade value</small><b>${money(st.avgTradeValue)}</b></div></div><div class="empty">${st.recentLogs.length?st.recentLogs.map(esc).join('<br>'):'No log lines yet.'}</div>`;
     const mail = Object.fromEntries(u.map(x=>[x.id, x.email]));
     $('#users').innerHTML = `<table><tr><th>Email</th><th>Role</th><th>Cash</th><th></th></tr>` + u.map(x=>`<tr><td>${esc(x.email)}</td><td>${x.role}</td>
       <td>${money(x.balance)}</td><td>${x.role==='user'?`<button class="btn ghost" onclick="reset('${x.id}')">Reset to $100,000</button>`:''}</td></tr>`).join('') + '</table>';

@@ -6,6 +6,7 @@
 #include <mutex>
 #include <httplib.h>
 #include "models.hpp"
+#include "core.hpp"
 
 inline std::string env(const char* k) { const char* v = std::getenv(k); return v ? v : ""; }
 inline std::string hostOf(std::string u) {
@@ -80,22 +81,16 @@ public:
 // ================= Yahoo Finance =================
 class YahooMarketData : public IMarketData {
     HttpsClient http_{"query1.finance.yahoo.com"};
-    std::map<std::string, std::pair<std::chrono::steady_clock::time_point, Quote>> cache_;
-    std::mutex m_;
+    TtlCache<std::string, Quote> cache_{std::chrono::seconds(30)};   // generic class template
 public:
     Quote getQuote(const std::string& s) override {
-        auto now = std::chrono::steady_clock::now();
-        {
-            std::lock_guard<std::mutex> g(m_);
-            auto it = cache_.find(s);
-            if (it != cache_.end() && now - it->second.first < std::chrono::seconds(20)) return it->second.second;
-        }
+        if (auto hit = cache_.get(s)) return *hit;
         auto r = http_.send("GET", "/v8/finance/chart/" + s + "?interval=1d&range=1d",
                             {{"User-Agent", "Mozilla/5.0"}});
         json j = r.asJson();
         if (r.status != 200 || j.is_discarded() || !j.contains("chart") ||
             !j["chart"].contains("result") || j["chart"]["result"].is_null())
-            throw TradeError("Unknown symbol: " + s);
+            throw UnknownSymbol("Unknown symbol: " + s);
         const json& m = j["chart"]["result"][0]["meta"];
         Quote q;
         q.symbol = s;
@@ -104,8 +99,7 @@ public:
         q.price = m.value("regularMarketPrice", 0.0);
         q.prevClose = m.value("chartPreviousClose", 0.0);
         if (q.price <= 0) throw TradeError("No live price for " + s);
-        std::lock_guard<std::mutex> g(m_);
-        cache_[s] = {now, q};
+        cache_.put(s, q);
         return q;
     }
 };

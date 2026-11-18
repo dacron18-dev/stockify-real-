@@ -3,13 +3,18 @@
 #include <map>
 #include <memory>
 #include <stdexcept>
+#include <utility>
 #include <string>
 #include <nlohmann/json.hpp>
+#include "core.hpp"
 using json = nlohmann::json;
 
 // ---- Custom exceptions (exception handling) ----
 struct TradeError : std::runtime_error { using std::runtime_error::runtime_error; };
 struct AuthError  : std::runtime_error { using std::runtime_error::runtime_error; };
+// Derived exceptions: callers can catch the specific type or the TradeError base.
+struct InsufficientFunds : TradeError { using TradeError::TradeError; };
+struct UnknownSymbol     : TradeError { using TradeError::TradeError; };
 
 // ---- Value object ----
 struct Holding {
@@ -48,7 +53,7 @@ public:
     virtual ~User() = default;
     virtual std::string role() const = 0;      // pure virtual
     virtual bool canTrade() const = 0;         // pure virtual
-    const std::string& id() const { return id_; }
+    const std::string& id() const noexcept { return id_; }
     const std::string& email() const { return email_; }
 };
 
@@ -62,12 +67,12 @@ public:
     bool canTrade() const override { return true; }
     double balance() const { return balance_; }
     void debit(double amt) {
-        if (amt > balance_ + 1e-9) throw TradeError("Not enough virtual cash for this order");
+        if (amt > balance_ + 1e-9) throw InsufficientFunds("Not enough virtual cash for this order");
         balance_ -= amt;
     }
     void credit(double amt) { balance_ += amt; }
-    Portfolio& portfolio() { return portfolio_; }
     const Portfolio& portfolio() const { return portfolio_; }
+    Portfolio& portfolio() { return const_cast<Portfolio&>(std::as_const(*this).portfolio()); }  // const_cast idiom
 };
 
 class Admin : public User {
@@ -78,7 +83,8 @@ public:
 };
 
 // ---- Polymorphism: Order::execute behaves differently per subclass ----
-class Order {
+class Order : public Loggable, public Serializable {   // multiple inheritance (diamond via virtual base)
+    static inline std::atomic<int> created_{0};              // static data member
 protected:
     std::string symbol_;
     int qty_;
@@ -86,11 +92,15 @@ protected:
 public:
     Order(std::string s, int q, double p) : symbol_(std::move(s)), qty_(q), price_(p) {
         if (q <= 0) throw TradeError("Quantity must be at least 1");
+        ++created_;
     }
+    static int created() { return created_; }                // static member function
     virtual ~Order() = default;
     virtual void execute(Trader& t) const = 0;
     virtual std::string side() const = 0;
-    double total() const { return qty_ * price_; }
+    Money total() const { return Money(price_) * qty_; }     // operator overloading
+    std::string toLogLine() const override { std::ostringstream o; o << at() << " " << side() << " " << qty_ << " " << symbol_ << " @ " << Money(price_) << " = " << total(); return o.str(); }
+    std::string toCsv() const override { return join(",", at(), side(), symbol_, qty_, price_); }
     const std::string& symbol() const { return symbol_; }
     int qty() const { return qty_; }
     double price() const { return price_; }
@@ -102,7 +112,7 @@ public:
     using Order::Order;
     std::string side() const override { return "BUY"; }
     void execute(Trader& t) const override {
-        t.debit(total());
+        t.debit(static_cast<double>(total()));
         t.portfolio().add(symbol_, qty_, price_);
     }
 };
@@ -113,7 +123,7 @@ public:
     std::string side() const override { return "SELL"; }
     void execute(Trader& t) const override {
         t.portfolio().remove(symbol_, qty_);
-        t.credit(total());
+        t.credit(static_cast<double>(total()));
     }
 };
 

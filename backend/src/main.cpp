@@ -1,7 +1,11 @@
-// Stockify API server (C++17). Routes are thin; all rules live in the OOP classes.
+// Stockify API server (C++20). Routes are thin; all rules live in the OOP classes.
 #include <algorithm>
 #include <cctype>
+#include <cstring>
+#include <future>
 #include "services.hpp"
+#include "threads.hpp"
+#include "files.hpp"
 
 static std::string cleanSymbol(std::string s) {
     std::transform(s.begin(), s.end(), s.begin(), ::toupper);
@@ -17,11 +21,33 @@ static json bodyOf(const httplib::Request& rq) {
     return j;
 }
 
+static AuditRecord makeRecord(const Order& o) {
+    AuditRecord r{};
+    std::strncpy(r.symbol, o.symbol().c_str(), sizeof r.symbol - 1);
+    r.side = o.side()[0];
+    r.qty = o.qty();
+    r.price = o.price();
+    r.ts = static_cast<long long>(o.at());
+    return r;
+}
+
 int main() {
     YahooMarketData market;
     SupabaseAuth auth(env("SUPABASE_URL"), env("SUPABASE_ANON_KEY"));
     SupabaseRepository repo(env("SUPABASE_URL"), env("SUPABASE_SERVICE_KEY"));
     const double START_CASH = 100000.0;
+
+    // Logging and background work
+    FileLogger logger("stockify.log");
+    AuditFile audit("stockify.audit");
+    ThreadPool bg(1);                                   // one writer thread: producer-consumer queue
+    std::atomic<int> tradeCount{0};
+    const std::vector<std::string> watchlist{"AAPL", "MSFT", "GOOGL", "TSLA", "NVDA"};
+    PeriodicTask refresher([&] {                        // keeps popular prices warm in the cache
+        for (auto& s : watchlist) { try { market.getQuote(s); } catch (...) {} }
+    }, 25000);
+    Thread refreshThread(refresher);
+    refreshThread.start();
 
     auto authed = [&](const httplib::Request& rq) {
         std::string h = rq.get_header_value("Authorization");
@@ -41,8 +67,10 @@ int main() {
         return [fn](const httplib::Request& rq, httplib::Response& rs) {
             try { fn(rq, rs); }
             catch (const AuthError& e)  { reply(rs, 401, {{"error", e.what()}}); }
-            catch (const TradeError& e) { reply(rs, 400, {{"error", e.what()}}); }
+            catch (const InsufficientFunds& e) { reply(rs, 402, {{"error", e.what()}}); }   // derived first
+            catch (const TradeError& e) { reply(rs, 400, {{"error", e.what()}}); }          // then base
             catch (const std::exception& e) { reply(rs, 500, {{"error", e.what()}}); }
+            catch (...) { reply(rs, 500, {{"error", "Unexpected error"}}); }                // catch-all
         };
     };
 
@@ -78,16 +106,21 @@ int main() {
     svr.Get("/api/portfolio", guard([&](const httplib::Request& rq, httplib::Response& rs) {
         auto u = authed(rq);
         Trader& t = trader(u);
+        // Fetch all quotes in parallel (futures); worker exceptions resurface at fut.get().
+        std::vector<std::pair<Holding, std::future<double>>> jobs;
+        for (auto& [sym, h] : t.portfolio().all())
+            jobs.emplace_back(h, std::async(std::launch::async, [&market, sym = sym] { return market.getQuote(sym).price; }));
         json rows = json::array();
-        double invested = 0;
-        for (auto& [sym, h] : t.portfolio().all()) {
-            double px = market.getQuote(sym).price;
-            invested += px * h.qty;
-            rows.push_back({{"symbol", sym}, {"qty", h.qty}, {"avgPrice", h.avgPrice}, {"price", px},
+        Money invested;
+        for (auto& [h, fut] : jobs) {
+            double px = fut.get();
+            invested += Money(px) * h.qty;
+            rows.push_back({{"symbol", h.symbol}, {"qty", h.qty}, {"avgPrice", h.avgPrice}, {"price", px},
                             {"value", px * h.qty}, {"pnl", (px - h.avgPrice) * h.qty}});
         }
+        Money equity = Money(t.balance()) + invested;
         reply(rs, 200, {{"email", t.email()}, {"balance", t.balance()}, {"holdings", rows},
-                        {"equity", t.balance() + invested}, {"startCash", START_CASH}});
+                        {"equity", static_cast<double>(equity)}, {"startCash", START_CASH}});
     }));
 
     svr.Post("/api/trade", guard([&](const httplib::Request& rq, httplib::Response& rs) {
@@ -100,6 +133,11 @@ int main() {
         order->execute(t);                                    // polymorphic call
         repo.saveTrader(t);
         repo.recordTrade(t.id(), *order);
+        ++tradeCount;
+        bg.submit([&logger, &audit, line = order->toLogLine(), rec = makeRecord(*order)] {
+            logger.write(line);                         // text log
+            audit.append(rec);                          // binary audit file
+        });
         reply(rs, 200, {{"message", order->side() + " " + std::to_string(order->qty()) + " " + sym + " filled"},
                         {"balance", t.balance()}});
     }));
@@ -123,6 +161,30 @@ int main() {
         reply(rs, 200, {{"ok", true}});
     }));
 
+    svr.Get("/api/watchlist", guard([&](const httplib::Request& rq, httplib::Response& rs) {
+        authed(rq);
+        std::vector<std::future<json>> fs;
+        for (auto& s : watchlist)
+            fs.push_back(std::async(std::launch::async, [&market, s] {
+                try { return market.getQuote(s).toJson(); } catch (...) { return json(nullptr); }
+            }));
+        json out = json::array();
+        for (auto& f : fs) { json q = f.get(); if (!q.is_null()) out.push_back(q); }
+        reply(rs, 200, out);
+    }));
+
+    svr.Get("/api/admin/stats", guard([&](const httplib::Request& rq, httplib::Response& rs) {
+        auto u = authed(rq); adminOnly(u);
+        std::vector<double> sizes;                      // read binary file with random access
+        for (std::size_t i = 0, n = audit.count(); i < n; ++i)
+            if (auto r = audit.read(i)) sizes.push_back(r->qty * r->price);
+        reply(rs, 200, {{"tradesThisSession", tradeCount.load()}, {"ordersCreated", Order::created()},
+                        {"auditRecords", audit.count()}, {"avgTradeValue", average(sizes)},
+                        {"recentLogs", logger.recent()}});
+    }));
+
     int port = env("PORT").empty() ? 8080 : std::stoi(env("PORT"));
     svr.listen("0.0.0.0", port);
+    refresher.stop();                                   // clean shutdown: stop, then join
+    refreshThread.join();
 }
