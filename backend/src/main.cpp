@@ -79,6 +79,7 @@ int main() {
                              {"Access-Control-Allow-Headers", "Content-Type, Authorization"},
                              {"Access-Control-Allow-Methods", "GET, POST, OPTIONS"}});
     svr.Options(".*", [](const httplib::Request&, httplib::Response& rs) { rs.status = 204; });
+    svr.Get("/", [](const httplib::Request&, httplib::Response& rs) { rs.set_content("Stockify API is running", "text/plain"); });
     svr.Get("/api/health", [](const httplib::Request&, httplib::Response& rs) { reply(rs, 200, {{"ok", true}}); });
 
     svr.Post("/api/signup", guard([&](const httplib::Request& rq, httplib::Response& rs) {
