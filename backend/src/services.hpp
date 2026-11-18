@@ -1,6 +1,8 @@
 // Stockify services: interfaces (abstraction) + Yahoo Finance / Supabase implementations.
 #pragma once
+#ifndef CPPHTTPLIB_OPENSSL_SUPPORT
 #define CPPHTTPLIB_OPENSSL_SUPPORT
+#endif
 #include <chrono>
 #include <cstdlib>
 #include <mutex>
@@ -177,7 +179,7 @@ public:
                                     {"qty", o.qty()}, {"price", o.price()}}.dump(), "return=minimal");
     }
     json listUsers() override { return call("GET", "profiles?select=id,email,role,balance&order=created_at.desc"); }
-    json listTrades(const std::string& uid) override {
+    json listTrades(const std::string& uid = "") override {
         std::string f = uid.empty() ? "" : "&user_id=eq." + uid;
         return call("GET", "trades?select=*&order=created_at.desc&limit=100" + f);
     }
