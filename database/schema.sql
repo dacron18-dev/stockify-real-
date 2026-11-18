@@ -3,7 +3,7 @@ create table if not exists profiles (
   id uuid primary key,                       -- same id as auth.users
   email text not null,
   role text not null default 'user' check (role in ('user','admin')),
-  balance numeric(14,2) not null default 100000,
+  balance numeric(14,2) not null default 1000000,
   created_at timestamptz default now()
 );
 create table if not exists holdings (

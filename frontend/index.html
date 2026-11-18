@@ -55,7 +55,7 @@ th{color:var(--muted);font-weight:500}
 <div id="toast" role="status"></div>
 <script>
 const $ = s => document.querySelector(s);
-const money = n => Number(n).toLocaleString('en-US', {style:'currency', currency:'USD'});
+const money = n => Number(n).toLocaleString('en-IN', {style:'currency', currency:'INR'});
 const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let mode = 'login', quote = null;
 
@@ -90,7 +90,7 @@ function authView(){
   const login = mode==='login';
   $('#app').innerHTML = `<div class="auth"><div class="logo">Stock<i>ify</i></div>
   <h1>Practice trading. Risk nothing.</h1>
-  <p>Start with $100,000 in paper money and trade real market prices.</p>
+  <p>Start with ₹10,00,000 in paper money and trade real NSE/BSE stock prices.</p>
   <form class="card" id="authForm">
     <label for="em">Email</label><input id="em" type="email" required autocomplete="email">
     <label for="pw">Password</label><input id="pw" type="password" minlength="6" required autocomplete="${login?'current-password':'new-password'}">
@@ -114,11 +114,12 @@ async function traderView(){
     <section class="card stats" id="stats"></section>
     <div class="grid">
       <section class="card"><h2>Trade</h2>
-        <form id="q" class="row" style="margin-top:12px"><input id="sym" placeholder="Ticker, e.g. AAPL or TCS.NS" aria-label="Ticker symbol" required><button class="btn">Get price</button></form>
-        <div id="quote"></div>
-        <div id="watch" class="row" style="flex-wrap:wrap;margin-top:14px"></div></section>
+        <form id="q" class="row" style="margin-top:12px"><input id="sym" list="nifty" placeholder="Indian stock, e.g. RELIANCE or TCS" aria-label="Ticker symbol" required><button class="btn">Get price</button></form>
+        <datalist id="nifty"></datalist>
+        <div id="quote"></div></section>
       <section class="card"><h2>Your holdings</h2><div class="wrap" id="hold"></div></section>
     </div>
+    <section class="card"><h2>Nifty 50 stocks (NSE)</h2><div class="wrap" id="watch"><div class="empty">Loading prices...</div></div></section>
     <section class="card"><h2>Trade history</h2><div class="wrap" id="hist"></div></section>
     <section class="card"><h2>Alerts and notifications</h2><div id="notes"></div><div id="alerts" style="margin-top:14px"></div></section></main>`;
   $('#q').onsubmit = async e => { e.preventDefault(); await getQuote($('#sym').value); };
@@ -130,7 +131,13 @@ async function traderView(){
 
 async function loadWatch(){
   try{ const w = await api('/watchlist');
-    $('#watch').innerHTML = w.map(q=>`<button type="button" class="btn ghost" onclick="getQuote('${esc(q.symbol)}')">${esc(q.symbol)} ${q.price.toFixed(2)}</button>`).join('');
+    $('#nifty').innerHTML = w.map(q=>`<option value="${esc(q.symbol)}">${esc(q.name)}</option>`).join('');
+    $('#watch').innerHTML = '<table><tr><th>Symbol</th><th>Company</th><th>Price</th><th>Change</th><th></th></tr>' + w.map(q=>{
+      const ch = q.changePct, up = ch>=0;
+      return `<tr><td><b>${esc(q.symbol.replace('.NS',''))}</b></td><td>${esc(q.name)}</td><td>${money(q.price)}</td>
+      <td class="${up?'gain':'loss'}">${up?'+':''}${ch.toFixed(2)}%</td>
+      <td><button type="button" class="btn ghost" onclick="getQuote('${esc(q.symbol)}');window.scrollTo({top:0,behavior:'smooth'})">Trade</button></td></tr>`;
+    }).join('') + '</table>';
   }catch(e){}
 }
 
@@ -141,7 +148,7 @@ async function getQuote(sym){
 function drawQuote(){
   const up = quote.changePct >= 0;
   $('#quote').innerHTML = `<div class="quote"><b>${esc(quote.symbol)}</b> <span style="color:var(--muted)">${esc(quote.name)}</span>
-    <div class="px">${quote.price.toFixed(2)} <small>${esc(quote.currency)}</small></div>
+    <div class="px">₹${quote.price.toFixed(2)} <small>INR</small></div>
     <div class="${up?'gain':'loss'}">${up?'+':''}${quote.changePct.toFixed(2)}% today</div></div>
     <label for="qty">Quantity</label><input id="qty" type="number" min="1" value="1">
     <div class="row" style="margin-top:14px"><button class="btn buy" style="flex:1" onclick="trade('BUY')">Buy</button>
@@ -196,7 +203,7 @@ async function adminView(){
     $('#sys').innerHTML = `<h2>System</h2><div class="stats" style="margin-top:12px"><div class="stat"><small>Trades this session</small><b>${st.tradesThisSession}</b></div><div class="stat"><small>Audit records (binary file)</small><b>${st.auditRecords}</b></div><div class="stat"><small>Average trade value</small><b>${money(st.avgTradeValue)}</b></div><div class="stat"><small>Simulation</small><b>${st.simulationRunning?'Running':'Stopped'}</b></div></div><div class="empty">${st.recentLogs.length?st.recentLogs.map(esc).join('<br>'):'No log lines yet.'}</div>`;
     const mail = Object.fromEntries(u.map(x=>[x.id, x.email]));
     $('#users').innerHTML = `<table><tr><th>Email</th><th>Role</th><th>Cash</th><th></th></tr>` + u.map(x=>`<tr><td>${esc(x.email)}</td><td>${x.role}</td>
-      <td>${money(x.balance)}</td><td>${x.role==='user'?`<button class="btn ghost" onclick="reset('${x.id}')">Reset to $100,000</button>`:''}</td></tr>`).join('') + '</table>';
+      <td>${money(x.balance)}</td><td>${x.role==='user'?`<button class="btn ghost" onclick="reset('${x.id}')">Reset to ₹10,00,000</button>`:''}</td></tr>`).join('') + '</table>';
     $('#all').innerHTML = t.length ? `<table><tr><th>Time</th><th>User</th><th>Side</th><th>Symbol</th><th>Qty</th><th>Price</th></tr>` +
       t.map(x=>`<tr><td>${new Date(x.created_at).toLocaleString()}</td><td>${esc(mail[x.user_id]||'')}</td><td>${x.side}</td><td>${esc(x.symbol)}</td><td>${x.qty}</td><td>${Number(x.price).toFixed(2)}</td></tr>`).join('') + '</table>'
       : '<div class="empty">No trades yet.</div>';
@@ -209,7 +216,7 @@ async function simToggle(run){
   try{ const r = await api('/admin/simulation', {method:'POST', body:{run}}); toast(r.running?'Simulation running':'Simulation stopped'); adminView(); }catch(err){ toast(err.message, true); }
 }
 async function reset(id){
-  if(!confirm('Reset this user’s cash to $100,000?')) return;
+  if(!confirm('Reset this user’s cash to ₹10,00,000?')) return;
   try{ await api('/admin/reset', {method:'POST', body:{id}}); toast('Balance reset'); adminView(); }catch(err){ toast(err.message, true); }
 }
 render();

@@ -43,7 +43,7 @@ class Stock {
     std::string symbol_, companyName_, currency_;
     double currentPrice_, previousPrice_;
 public:
-    Stock(std::string symbol = "", std::string name = "", double cur = 0, double prev = 0, std::string currency = "USD")
+    Stock(std::string symbol = "", std::string name = "", double cur = 0, double prev = 0, std::string currency = "INR")
         : symbol_(std::move(symbol)), companyName_(std::move(name)), currency_(std::move(currency)),
           currentPrice_(cur), previousPrice_(prev) {}
     void updatePrice(double p) noexcept { previousPrice_ = currentPrice_; currentPrice_ = p; }

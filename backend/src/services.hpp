@@ -50,11 +50,13 @@ inline std::string errText(const json& j, const std::string& fallback) {
 // ================= Yahoo Finance =================
 class YahooMarketData : public IMarketData {
     HttpsClient http_{"query1.finance.yahoo.com"};
-    TtlCache<std::string, Quote> cache_{std::chrono::seconds(30)};   // generic class template
+    TtlCache<std::string, Quote> cache_{std::chrono::seconds(45)};   // generic class template
 public:
     Quote getQuote(const std::string& s) override {
         if (auto hit = cache_.get(s)) return *hit;
-        auto r = http_.send("GET", "/v8/finance/chart/" + s + "?interval=1d&range=1d", {{"User-Agent", "Mozilla/5.0"}});
+        std::string path = s;                                       // '&' must be encoded in the URL (M&M.NS)
+        for (size_t p; (p = path.find('&')) != std::string::npos;) path.replace(p, 1, "%26");
+        auto r = http_.send("GET", "/v8/finance/chart/" + path + "?interval=1d&range=1d", {{"User-Agent", "Mozilla/5.0"}});
         json j = r.asJson();
         if (r.status != 200 || j.is_discarded() || !j.contains("chart") ||
             !j["chart"].contains("result") || j["chart"]["result"].is_null())
@@ -63,7 +65,9 @@ public:
         Quote q;
         q.symbol = s;
         q.name = m.value("shortName", m.value("longName", s));
-        q.currency = m.value("currency", "USD");
+        q.currency = m.value("currency", "INR");
+        if (q.currency != "INR")                                    // Indian market only: reject US / foreign listings
+            throw UnknownSymbol("Only Indian (NSE/BSE) stocks are supported: " + s);
         q.price = m.value("regularMarketPrice", 0.0);
         q.prevClose = m.value("chartPreviousClose", 0.0);
         if (q.price <= 0) throw TradeError("No live price for " + s);

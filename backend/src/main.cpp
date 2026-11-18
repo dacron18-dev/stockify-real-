@@ -7,12 +7,19 @@
 #include "engine.hpp"
 #include "files.hpp"
 
+// Indian stocks only: NSE (.NS) or BSE (.BO). "TCS" and "tcs" both become "TCS.NS".
 static std::string cleanSymbol(std::string s) {
     std::transform(s.begin(), s.end(), s.begin(), ::toupper);
-    bool ok = !s.empty() && s.size() <= 15 &&
-              std::all_of(s.begin(), s.end(), [](char c) { return std::isalnum((unsigned char)c) || c == '.' || c == '-' || c == '^' || c == '='; });
-    if (!ok) throw ValidationError("Enter a valid ticker, e.g. AAPL or RELIANCE.NS");
-    return s;
+    auto endsWith = [&](const std::string& suf) { return s.size() > suf.size() && s.compare(s.size() - suf.size(), suf.size(), suf) == 0; };
+    std::string base = s;
+    std::string suffix = ".NS";                                   // NSE by default
+    if (endsWith(".NS")) base = s.substr(0, s.size() - 3);
+    else if (endsWith(".BO")) { base = s.substr(0, s.size() - 3); suffix = ".BO"; }
+    // base name: letters, digits, '&' and '-' only (e.g. M&M, BAJAJ-AUTO, TCS)
+    bool ok = !base.empty() && base.size() <= 20 &&
+              std::all_of(base.begin(), base.end(), [](char c) { return std::isalnum((unsigned char)c) || c == '&' || c == '-'; });
+    if (!ok) throw ValidationError("Enter an Indian stock symbol, e.g. RELIANCE, TCS or INFY.NS (NSE/BSE only)");
+    return base + suffix;
 }
 static void reply(httplib::Response& rs, int code, const json& j) { rs.status = code; rs.set_content(j.dump(), "application/json"); }
 static json bodyOf(const httplib::Request& rq) {
@@ -41,17 +48,24 @@ static AuditRecord makeRecord(const Transaction& t) {
 }
 
 int main() {
-    const double START_CASH = 100000.0;
-    const std::vector<std::string> watchlist{"AAPL", "MSFT", "GOOGL", "TSLA", "NVDA"};
+    const double START_CASH = 1000000.0;   // Rs 10,00,000 virtual cash
+    // 30 large-cap Nifty 50 stocks shown in the market table (any other NSE/BSE symbol can still be searched)
+    const std::vector<std::string> watchlist{
+        "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "ICICIBANK.NS", "INFY.NS",
+        "HINDUNILVR.NS", "ITC.NS", "SBIN.NS", "BHARTIARTL.NS", "KOTAKBANK.NS",
+        "LT.NS", "AXISBANK.NS", "ASIANPAINT.NS", "MARUTI.NS", "SUNPHARMA.NS",
+        "TITAN.NS", "BAJFINANCE.NS", "HCLTECH.NS", "NTPC.NS", "ULTRACEMCO.NS",
+        "ONGC.NS", "WIPRO.NS", "POWERGRID.NS", "M&M.NS", "TATASTEEL.NS",
+        "JSWSTEEL.NS", "ADANIPORTS.NS", "COALINDIA.NS", "NESTLEIND.NS", "TECHM.NS"};
 
     YahooMarketData yahoo;
     SupabaseAuth auth(env("SUPABASE_URL"), env("SUPABASE_ANON_KEY"));
     SupabaseRepository repo(env("SUPABASE_URL"), env("SUPABASE_SERVICE_KEY"));
-    Market market(1, "Global Equities", yahoo);
+    Market market(1, "Indian Equities (NSE/BSE)", yahoo);
     TransactionManager txm(repo);
     OrderManager orders(market, txm, repo);
     AlertManager alerts(repo, market);
-    Simulation sim(1, 25000, market, alerts);            // background thread: refresh prices + check alerts
+    Simulation sim(1, 45000, market, alerts);            // background thread: refresh prices + check alerts
     for (auto& s : watchlist) market.addStock(Stock(s));
     sim.start();
 

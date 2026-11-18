@@ -102,7 +102,7 @@ public:
     bool operator==(const Money& o) const noexcept { return v_ == o.v_; }
     explicit operator double() const noexcept { return v_; }                       // conversion operator
     friend std::ostream& operator<<(std::ostream& os, const Money& m) {            // friend function
-        return os << '$' << std::fixed << std::setprecision(2) << m.v_;
+        return os << "\xE2\x82\xB9" << std::fixed << std::setprecision(2) << m.v_;
     }
     friend std::istream& operator>>(std::istream& is, Money& m) { return is >> m.v_; }
 };
